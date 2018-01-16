@@ -2,15 +2,15 @@
 MiniPyP
 #######
 ---------------------------------------------
-An all-purpose, minimalist Python web server.
+A more traditional web server in Python
 ---------------------------------------------
 
 About the project
 =================
-MiniPyP (pronounced ``mini·pipe``) is an event-driven web server written purely in Python. Its main goal is to provide an Apache/NGINX-like setup without the use of any proxies. The project is completely modular, meaning just like in the aforementioned servers, you can implement your own handlers for practically any part of the server without recompiling.
+MiniPyP (pronounced ``mini·pipe``) is an event-driven web server written in pure Python. **However, MiniPyP is not an application framework**. It's a full web server, with virtual hosts, reverse proxies, and everything else you need. MiniPyP is intended to replace Apache and nginx, so you can use Python without the performance hit of CGI.
 
-**Note:** MiniPyP is currently **very** early in development, and no form of a release date has been determined yet. That said, things shouldn't break *too* much, so feel free to use the server at your leisure.
+Please note that MiniPyP is currently in planning/pre-alpha. Things may change a lot before it even gets to alpha. *Please* do not use this in any production scenario. 
 
 Setup
 =====
-*Setup instructions will be available soon.*
+*Setup instructions will be available upon alpha.*
