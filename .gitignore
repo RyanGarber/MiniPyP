@@ -1,0 +1,7 @@
+__pycache__/
+.idea/
+dist/
+build/
+*.egg-info/
+*.egg
+*.py[co]
