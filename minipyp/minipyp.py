@@ -1,14 +1,16 @@
-from urllib.parse import urlparse, parse_qs
-import importlib.util
-import hashlib
-import os
 import asyncio
+import glob
+import hashlib
+import importlib.util
+import os
 import re
 import signal
 import sys
-import glob
+from email.utils import formatdate
+from traceback import format_exc
+from urllib.parse import urlparse, parse_qs
 
-__version__ = '0.1.0a1'
+__version__ = '0.1.0a2'
 
 
 def _default(obj: dict, key, default):
@@ -34,42 +36,55 @@ class PyHandler(Handler):
         result = mod.render(minipyp, request)
         os.chdir(cwd)
         sys.path.remove(cwd_temp)
+        if type(result) == str:
+            charset = 'utf-8'
+            if 'Content-Type' in request._response_headers:
+                if 'charset=' in request._response_headers['Content-Type']:
+                    charset = request._response_headers['Content-Type'].split('charset=')[1]
+            result = result.encode(charset)
         return result
 
 
 class Request:
-    def __init__(self, server, data):
-        self.peer = server._peer
-        proto = data[0].split()
-        if len(proto) != 3:
-            raise Exception('Invalid request line')
-        self.method = proto[0]
-        self.protocol = proto[2]
-        if self.protocol not in ['HTTP/1.0', 'HTTP/1.1']:
-            raise Exception('Invalid protocol')
-        self.headers = {}
-        try:
-            for line in data[1:]:
-                if line == '':
-                    break
-                key, value = line.split(': ', 1)
-                self.headers[key] = value
-        except:
-            raise Exception('Malformed headers')
-        uri = urlparse(proto[1])
-        self.scheme = uri.scheme or 'http'  # TODO SSL
-        self.host = uri.netloc or self.headers['Host']
-        self.path = uri.path
-        self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')
-        self.query = parse_qs(uri.query, True)
-        if '' in data:
-            self.body = '\n'.join(data[data.index('') + 1:])
-        self.post = parse_qs(self.body, True)
+    def __init__(self, server=None, data=None):
         self._status = None
         self._response_headers = {}
-        self.site = None
-        self.root = None
-        self.file = None
+        self.bare = (not server or not data)
+        if not self.bare:
+            self.peer = server._peer
+            proto = data[0].split()
+            if len(proto) != 3:
+                raise Exception('Invalid request line')
+            self.method = proto[0]
+            self.protocol = proto[2]
+            if self.protocol not in ['HTTP/1.0', 'HTTP/1.1']:
+                raise Exception('Invalid protocol')
+            self.headers = {}
+            try:
+                for line in data[1:]:
+                    if line == '':
+                        break
+                    key, value = line.split(': ', 1)
+                    self.headers[key] = value
+            except:
+                raise Exception('Malformed headers')
+            uri = urlparse(proto[1])
+            self.scheme = uri.scheme or 'http'  # TODO SSL
+            try:
+                self.host = uri.netloc or self.headers['Host']
+            except:
+                raise Exception('No host provided')
+            self.path = uri.path
+            self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')
+            self.query = parse_qs(uri.query, True)
+            if '' in data:
+                self.body = '\n'.join(data[data.index('') + 1:])
+            self.post = parse_qs(self.body, True)
+            self.site = None
+            self.root = None
+            self.file = None
+        else:
+            self.protocol = 'HTTP/1.1'
 
     def set_header(self, name: str, value: str):
         self._response_headers[name] = value
@@ -103,79 +118,83 @@ class Server(asyncio.Protocol):
     def data_received(self, data):
         lines = list(map(lambda x: x.decode('utf-8'), data.split(b'\r\n')))
         if len(lines):
-            request = Request(self, lines)
-            print('[' + self._peer[0] + '] GET ' + request.path)
-            request.site = self._minipyp.get_site(request.host)
-            request.root = request.site['root'] if request.site else self._minipyp._root
-            if request.protocol == 'HTTP/1.1':
-                self._keepalive = request.headers['Connection'] != 'close'
-            else:
-                self._keepalive = request.headers['Connection'] == 'Keep-Alive'
-            match = re.match(r'timeout=(\d+)', request.headers.get('Keep-Alive', ''))
-            if match:
-                timeout = int(match.group(1))
-                if timeout < self._timeout:
-                    self._timeout = timeout
-            path = list(filter(None, request.path.split('?')[0].split('/')))
-            path = [''] + path
-            file = None
-            full_ospath = os.path.join(request.root, *path)
-            options = self._minipyp._directory(full_ospath)
-            if options['public']:
-                for i in range(len(path)):
-                    ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
-                    viewing_dir = i == 0 and os.path.isdir(ospath)
-                    if viewing_dir:
-                        matches = glob.glob(os.path.join(ospath, 'index.*'))
+            try:
+                request = Request(self, lines)
+                print('[' + self._peer[0] + '] ' + request.method + ' ' + request.path)
+                request.site = self._minipyp.get_site(request.host)
+                request.root = request.site['root'] if request.site else self._minipyp._root
+                if request.protocol == 'HTTP/1.1':
+                    self._keepalive = request.headers['Connection'] != 'close'
+                else:
+                    self._keepalive = request.headers['Connection'] == 'Keep-Alive'
+                match = re.match(r'timeout=(\d+)', request.headers.get('Keep-Alive', ''))
+                if match:
+                    timeout = int(match.group(1))
+                    if timeout < self._timeout:
+                        self._timeout = timeout
+                path = list(filter(None, request.path.split('?')[0].split('/')))
+                path = [''] + path
+                file = None
+                full_ospath = os.path.join(request.root, *path)
+                options = self._minipyp._directory(full_ospath)
+                if options['public']:
+                    for i in range(len(path)):
+                        ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
+                        viewing_dir = i == 0 and os.path.isdir(ospath)
+                        if viewing_dir:
+                            matches = glob.glob(os.path.join(ospath, 'index.*'))
+                            if len(matches):
+                                file = matches[0]
+                                break
+                        if os.path.isfile(ospath):
+                            file = ospath
+                            break
+                        matches = glob.glob(ospath + '.*')
                         if len(matches):
                             file = matches[0]
                             break
-                    if os.path.isfile(ospath):
-                        file = ospath
-                        break
-                    matches = glob.glob(ospath + '.*')
-                    if len(matches):
-                        file = matches[0]
-                        break
-                    if os.path.isfile(os.path.join(ospath, '.static')):
-                        break
-                    if not options['static']:
-                        matches = glob.glob(os.path.join(ospath, 'catchall.*'))
-                        if len(matches):
-                            file = matches[0]
+                        if os.path.isfile(os.path.join(ospath, '.static')):
                             break
-                    if viewing_dir:
-                        if options['indexing']:
-                            request.set_header('Content-Type', 'text/html')
-                            (_, dirs, fils) = next(os.walk(ospath))
-                            index = '''<strong>Files</strong>
-                                <ul>
-                        '''
-                            for fil in fils:
-                                index += '            <li><a href="' + fil + '">' + fil + '</a></li>\n'
-                            if not len(fils):
-                                index += '            <small>(none)</small>\n'
-                            index += '''        </ul>
-                                <strong>Directories</strong>
-                                <ul>
-                        '''
-                            for dir in dirs:
-                                index += '            <li><a href="' + dir + '/">' + dir + '/</a></li>\n'
-                            if not len(dirs):
-                                index += '            <small>(none)</small>\n'
-                            index += '        </ul>'
-                            self._respond(request, self._minipyp._index.format(request.path, index, __version__))
-                            file = False
-                            break
-                        self._give_error(request, 403)
-                    path.pop()
-                if file is None:
-                    self._give_error(request, 404)
-                elif file is not False:
-                    request.file = file
-                    self._respond(request, self._render(request, file, options))
-            else:
-                self._give_error(request, 403)
+                        if not options['static']:
+                            matches = glob.glob(os.path.join(ospath, 'catchall.*'))
+                            if len(matches):
+                                file = matches[0]
+                                break
+                        if viewing_dir:
+                            if options['indexing']:
+                                request.set_header('Content-Type', 'text/html')
+                                (_, dirs, fils) = next(os.walk(ospath))
+                                index = '''<strong>Files</strong>
+        <ul>
+'''
+                                for fil in fils:
+                                    index += '            <li><a href="' + fil + '">' + fil + '</a></li>\n'
+                                if not len(fils):
+                                    index += '            <small>(none)</small>\n'
+                                index += '''        </ul>
+        <strong>Directories</strong>
+        <ul>
+'''
+                                for dir in dirs:
+                                    index += '            <li><a href="' + dir + '/">' + dir + '/</a></li>\n'
+                                if not len(dirs):
+                                    index += '            <small>(none)</small>\n'
+                                index += '        </ul>'
+                                response = self._minipyp._index.format(request.path, index, __version__)
+                                self._respond(request, response.encode('utf-8'))
+                                file = False
+                                break
+                            self._give_error(request, 403)
+                        path.pop()
+                    if file is None:
+                        self._give_error(request, 404)
+                    elif file is not False:
+                        request.file = file
+                        self._respond(request, self._render(request, file, options))
+                else:
+                    self._give_error(request, 403)
+            except:
+                self._give_error(Request(), 500, traceback=format_exc())
         else:
             self._keepalive = False
         if not self._keepalive:
@@ -200,9 +219,11 @@ class Server(asyncio.Protocol):
                 html = self._render(request, page['file'])
         elif 'html' in page:
             html = page['html']
-            kwargs['uri'] = request.path
+            if not request.bare:
+                kwargs['uri'] = request.path
             for var, value in kwargs.items():
                 html = html.replace('{' + var + '}', value)
+            html = html.encode('utf-8')
             request.set_header('Content-Type', 'text/html')
         self._respond(request, html)
 
@@ -213,28 +234,30 @@ class Server(asyncio.Protocol):
         request.set_header('Content-Type', mime if handle else 'text/plain')
         if ext in self._minipyp._handlers and handle:
             return self._minipyp._handlers[ext].handle(self._minipyp, request)
-        return open(file).read()
+        request.set_header('Last-Modified', formatdate(timeval=os.path.getmtime(file), usegmt=True))
+        with open(file, 'rb') as f:
+            return f.read()
 
-    def _respond(self, request: Request, data: str):
-        data = data.replace('\n', '\r\n')
-        self._write(request.protocol + ' ' + (request._status or '200 OK'))
+    def _respond(self, request: Request, data: bytes):
+        self._write((request.protocol + ' ' + (request._status or '200 OK')).encode('utf-8'))
         if self._keepalive:
             request.set_header('Keep-Alive', 'timeout=' + str(self._timeout))
         if 'Content-Type' not in request._response_headers:
             request.set_header('Content-Type', 'text/plain')
         request.set_header('Content-Length', str(len(data)))
         sha1 = hashlib.sha1()
-        sha1.update(data.encode('utf-8'))
+        sha1.update(data)
         request.set_header('Etag', '"' + sha1.hexdigest() + '"')
+        request.set_header('Date', formatdate(usegmt=True))
         request.set_header('Server', 'MiniPyP/' + __version__)
         for key, value in request._response_headers.items():
-            self._write(key + ': ' + value)
-        self._write('')
-        if len(data):
+            self._write((key + ': ' + value).encode('utf-8'))
+        self._write(b'')
+        if len(data) and (request.bare or request.method != 'HEAD'):
             self._write(data)
 
-    def _write(self, data: str):
-        self._transport.write((data + '\r\n').encode('utf-8'))
+    def _write(self, data: bytes):
+        self._transport.write(data + b'\r\n')
 
 
 class MiniPyP:
@@ -285,6 +308,19 @@ class MiniPyP:
 
     def __init__(self, host='0.0.0.0', port=80, root='/var/www/html', timeout=15,
                  sites=None, handlers=None, error_pages=None, mime_types=None, directories=None):
+        """
+        Configure the MiniPyP server.
+
+        :param host: the IP to bind to (0.0.0.0 for all)
+        :param port: the port to bind to
+        :param root: document root when no site applies
+        :param timeout: default timeout for keep-alive connections
+        :param sites: list of sites (see MiniPyP.add_site)
+        :param handlers: dict of file handlers [extension: Handler] (see MiniPyP.add_handler)
+        :param error_pages: dict of error pages {code: page}
+        :param mime_types: dict of MIME types {extension: type}
+        :param directories: list of directories
+        """
         self._host = host
         self._port = port
         self._root = root
@@ -377,6 +413,7 @@ class MiniPyP:
         _default(self._mime_types, 'otf', 'font/opentype')
 
     def start(self):
+        """Start the server."""
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         if sys.platform == 'win32':
             asyncio.set_event_loop(asyncio.ProactorEventLoop())
@@ -393,9 +430,11 @@ class MiniPyP:
             self.stop()
 
     def stop(self):
+        """Stop the server."""
         print('Cleaning up...')
 
     def add_site(self, site):
+        """Add a site after intiialization."""
         self._sites.append(site)
 
     def add_handler(self, extension: str, mime_type: str, handler: Handler):
