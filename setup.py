@@ -31,7 +31,7 @@ setup(
     ],
     keywords='http https web cgi fast-cgi fpm ssl tls socket proxy reverse',
     packages=find_packages(exclude=['docs', 'tests']),
-    download_url='https://github.com/RyanGarber/minipyp/archive/0.1.0a2.tar.gz',
+    download_url='https://github.com/RyanGarber/minipyp/archive/0.1.0b1.tar.gz',
     install_requires=['requests', 'h2'],
     extras_require={'tests': ['unittest']},
     python_requires='>=3'

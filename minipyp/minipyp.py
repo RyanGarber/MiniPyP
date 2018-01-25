@@ -1,5 +1,6 @@
 import asyncio
 import glob
+import gzip
 import hashlib
 import importlib.util
 import os
@@ -10,7 +11,7 @@ from email.utils import formatdate
 from traceback import format_exc
 from urllib.parse import urlparse, parse_qs
 
-__version__ = '0.1.0a2'
+__version__ = '0.1.0b1'
 
 
 def _default(obj: dict, key, default):
@@ -30,7 +31,7 @@ class PyHandler(Handler):
         os.chdir(cwd_temp)
         if cwd_temp not in sys.path:
             sys.path.append(cwd_temp)
-        spec = importlib.util.spec_from_file_location('renderer', request.file)
+        spec = importlib.util.spec_from_file_location('page', request.file)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         result = mod.render(minipyp, request)
@@ -46,13 +47,14 @@ class PyHandler(Handler):
 
 
 class Request:
-    def __init__(self, server=None, data=None):
+    def __init__(self, server=None, bare=None, full=None):
         self._status = None
         self._response_headers = {}
-        self.bare = (not server or not data)
-        if not self.bare:
+        self.bare = bool(bare)
+        if full:
+            # Full Request object
             self.peer = server._peer
-            proto = data[0].split()
+            proto = full[0].split()
             if len(proto) != 3:
                 raise Exception('Invalid request line')
             self.method = proto[0]
@@ -61,7 +63,7 @@ class Request:
                 raise Exception('Invalid protocol')
             self.headers = {}
             try:
-                for line in data[1:]:
+                for line in full[1:]:
                     if line == '':
                         break
                     key, value = line.split(': ', 1)
@@ -77,14 +79,25 @@ class Request:
             self.path = uri.path
             self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')
             self.query = parse_qs(uri.query, True)
-            if '' in data:
-                self.body = '\n'.join(data[data.index('') + 1:])
+            if '' in full:
+                self.body = '\n'.join(full[full.index('') + 1:])
             self.post = parse_qs(self.body, True)
             self.site = None
             self.root = None
             self.file = None
-        else:
-            self.protocol = 'HTTP/1.1'
+        elif bare:
+            # Barebones Request object (for error handling)
+            self.protocol = 'HTTP/1.0'
+            if len(bare):
+                if bare[:5] == 'HTTP/' and ' ' in bare:
+                    self.protocol = bare.split()[0]
+            self.headers = {}
+            for line in bare[1:]:
+                if line == '':
+                    break
+                if ': ' in line:
+                    key, value = line.split(': ', 1)
+                    self.headers[key] = value
 
     def set_header(self, name: str, value: str):
         self._response_headers[name] = value
@@ -116,10 +129,11 @@ class Server(asyncio.Protocol):
             print(e)
 
     def data_received(self, data):
+        print(data)
         lines = list(map(lambda x: x.decode('utf-8'), data.split(b'\r\n')))
         if len(lines):
             try:
-                request = Request(self, lines)
+                request = Request(self, full=lines)
                 print('[' + self._peer[0] + '] ' + request.method + ' ' + request.path)
                 request.site = self._minipyp.get_site(request.host)
                 request.root = request.site['root'] if request.site else self._minipyp._root
@@ -136,7 +150,7 @@ class Server(asyncio.Protocol):
                 path = [''] + path
                 file = None
                 full_ospath = os.path.join(request.root, *path)
-                options = self._minipyp._directory(full_ospath)
+                options = self._minipyp.get_options(full_ospath)
                 if options['public']:
                     for i in range(len(path)):
                         ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
@@ -149,10 +163,11 @@ class Server(asyncio.Protocol):
                         if os.path.isfile(ospath):
                             file = ospath
                             break
-                        matches = glob.glob(ospath + '.*')
-                        if len(matches):
-                            file = matches[0]
-                            break
+                        if not os.path.isdir(ospath):
+                            matches = glob.glob(ospath + '.*')
+                            if len(matches):
+                                file = matches[0]
+                                break
                         if os.path.isfile(os.path.join(ospath, '.static')):
                             break
                         if not options['static']:
@@ -194,7 +209,7 @@ class Server(asyncio.Protocol):
                 else:
                     self._give_error(request, 403)
             except:
-                self._give_error(Request(), 500, traceback=format_exc())
+                self._give_error(Request(bare=lines), 500, traceback=format_exc())
         else:
             self._keepalive = False
         if not self._keepalive:
@@ -244,16 +259,23 @@ class Server(asyncio.Protocol):
             request.set_header('Keep-Alive', 'timeout=' + str(self._timeout))
         if 'Content-Type' not in request._response_headers:
             request.set_header('Content-Type', 'text/plain')
-        request.set_header('Content-Length', str(len(data)))
         sha1 = hashlib.sha1()
         sha1.update(data)
         request.set_header('Etag', '"' + sha1.hexdigest() + '"')
         request.set_header('Date', formatdate(usegmt=True))
         request.set_header('Server', 'MiniPyP/' + __version__)
+        has_body = False
+        if len(data) and (request.bare or request.method != 'HEAD'):
+            has_body = True
+            if 'gzip' in request.headers.get('Accept-Encoding', ''):
+                request.set_header('Content-Encoding', 'gzip')
+                request.set_header('Vary', 'Accept-Encoding')
+                data = gzip.compress(data)
         for key, value in request._response_headers.items():
             self._write((key + ': ' + value).encode('utf-8'))
         self._write(b'')
-        if len(data) and (request.bare or request.method != 'HEAD'):
+        if has_body:
+            request.set_header('Content-Length', str(len(data)))
             self._write(data)
 
     def _write(self, data: bytes):
@@ -353,7 +375,7 @@ class MiniPyP:
         _default(self._mime_types, 'htm', 'text/html')
         _default(self._mime_types, 'rdf', 'application/xml')
         _default(self._mime_types, 'xml', 'application/xml')
-        _default(self._mime_types, 'js', 'application/js')
+        _default(self._mime_types, 'js', 'application/javascript')
         _default(self._mime_types, 'css', 'text/css')
         _default(self._mime_types, 'rss', 'application/rss+xml')
         _default(self._mime_types, 'mid', 'audio/midi')
@@ -434,10 +456,19 @@ class MiniPyP:
         print('Cleaning up...')
 
     def add_site(self, site):
-        """Add a site after intiialization."""
+        """
+        Add a site after initialization.
+        :param site: dict containing 'uris' (list of hosts), and 'root' (document root)
+        """
         self._sites.append(site)
 
     def add_handler(self, extension: str, mime_type: str, handler: Handler):
+        """
+        Add a file handler after initialization.
+        :param extension: the file extension (e.g. 'php')
+        :param mime_type: the MIME type to serve with this file
+        :param handler: a Handler subclass (see Handler docs)
+        """
         extension = extension.lower()
         if extension in self._handlers.keys():
             raise Exception('add_handler failed: handler already exists for .' + extension)
@@ -445,12 +476,22 @@ class MiniPyP:
         self._handlers[extension] = handler
 
     def get_site(self, host):
+        """
+        Get the site object for any given host.
+        :param host: the hostname to look up
+        :return: dict or None
+        """
         for site in self._sites:
             if host.lower() in site['uris']:
                 return site
         return None
 
-    def _directory(self, dir: str):
+    def get_options(self, dir: str):
+        """
+        Get the options for any given directory, defaulting if one is not set.
+        :param dir: OS-specific directory path
+        :return: dict
+        """
         options = {
             'public': True,
             'static': False,
