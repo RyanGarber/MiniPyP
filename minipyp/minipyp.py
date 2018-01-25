@@ -1,3 +1,4 @@
+# from requests import Request as HRequest, Session as HSession
 import asyncio
 import glob
 import gzip
@@ -8,8 +9,10 @@ import re
 import signal
 import sys
 from email.utils import formatdate
-from traceback import format_exc
+from traceback import format_exc, print_exc
 from urllib.parse import urlparse, parse_qs
+
+import requests
 
 __version__ = '0.1.0b1'
 
@@ -140,79 +143,112 @@ class Server(asyncio.Protocol):
                 request = Request(self, full=lines)
                 print('[' + self._peer[0] + '] ' + request.method + ' ' + request.path)
                 request.site = self._minipyp.get_site(request.host)
-                request.root = request.site['root'] if request.site else self._minipyp._root
-                if request.protocol == 'HTTP/1.1':
-                    self._keepalive = request.headers['Connection'] != 'close'
+                proxy = None
+                if request.site and 'proxies' in request.site:
+                    for loc, url in request.site['proxies'].items():
+                        matches = re.match(loc, request.path)
+                        if matches:
+                            proxy_p = urlparse(url)
+                            proxy = proxy_p.scheme + '://' + proxy_p.netloc
+                            groups = matches.groups()
+                            i = 0
+                            request.path = proxy_p.path
+                            if proxy_p.query and len(proxy_p.query):
+                                request.path = request.path + '?' + proxy_p.query
+                            if len(groups):
+                                request.path = request.path.replace('{' + str(i) + '}', groups[i])
+                                i += 1
+                if proxy:
+                    print('[' + request.peer[0] + '] Forwarding to: ' + proxy + request.path)
+                    if 'X-Forwarded-Host' not in request.headers:
+                        request.headers['X-Forwarded-Host'] = request.host
+                    r = requests.request(request.method, proxy + request.path, stream=True,
+                                         headers=request.headers, data=request.body)
+                    request.set_status(str(r.status_code) + ' ' + r.reason)
+                    request._response_headers = r.headers
+                    if r.headers.get('Transfer-Encoding', '') == 'chunked':
+                        i = 0
+                        for chunk in r.iter_content(chunk_size=None):
+                            chunk = hex(len(chunk))[2:].encode('latin_1') + b'\r\n' + chunk + b'\r\n'
+                            if i == 0:
+                                self._respond(request, chunk)
+                            else:
+                                self._write(chunk)
+                            i += 1
+                        self._write(b'0\r\n\r\n')
+                    else:
+                        self._respond(request, r.content)
+                    r.close()
                 else:
-                    self._keepalive = request.headers['Connection'] == 'Keep-Alive'
-                match = re.match(r'timeout=(\d+)', request.headers.get('Keep-Alive', ''))
-                if match:
-                    timeout = int(match.group(1))
-                    if timeout < self._timeout:
-                        self._timeout = timeout
-                path = list(filter(None, request.path.split('?')[0].split('/')))
-                path = [''] + path
-                file = None
-                full_ospath = os.path.join(request.root, *path)
-                options = self._minipyp.get_options(full_ospath)
-                if options['public']:
-                    for i in range(len(path)):
-                        ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
-                        viewing_dir = i == 0 and os.path.isdir(ospath)
-                        if viewing_dir:
-                            matches = glob.glob(os.path.join(ospath, 'index.*'))
-                            if len(matches):
-                                file = matches[0]
+                    request.root = request.site['root'] if request.site else self._minipyp._root
+                    if request.protocol == 'HTTP/1.1':
+                        self._keepalive = request.headers['Connection'] != 'close'
+                    else:
+                        self._keepalive = request.headers['Connection'] == 'Keep-Alive'
+                    match = re.match(r'timeout=(\d+)', request.headers.get('Keep-Alive', ''))
+                    if match:
+                        timeout = int(match.group(1))
+                        if timeout < self._timeout:
+                            self._timeout = timeout
+                    path = list(filter(None, request.path.split('?')[0].split('/')))
+                    path = [''] + path
+                    file = None
+                    full_ospath = os.path.join(request.root, *path)
+                    options = self._minipyp.get_options(full_ospath)
+                    if options['public']:
+                        for i in range(len(path)):
+                            ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
+                            viewing_dir = i == 0 and os.path.isdir(ospath)
+                            if viewing_dir:
+                                matches = glob.glob(os.path.join(ospath, 'index.*'))
+                                if len(matches):
+                                    file = matches[0]
+                                    break
+                            if os.path.isfile(ospath):
+                                file = ospath
                                 break
-                        if os.path.isfile(ospath):
-                            file = ospath
-                            break
-                        if not os.path.isdir(ospath):
-                            matches = glob.glob(ospath + '.*')
-                            if len(matches):
-                                file = matches[0]
+                            if not os.path.isdir(ospath):
+                                matches = glob.glob(ospath + '.*')
+                                if len(matches) and os.path.isfile(matches[0]):
+                                    file = matches[0]
+                                    break
+                            if os.path.isfile(os.path.join(ospath, '.static')):
                                 break
-                        if os.path.isfile(os.path.join(ospath, '.static')):
-                            break
-                        if not options['static']:
-                            matches = glob.glob(os.path.join(ospath, 'catchall.*'))
-                            if len(matches):
-                                file = matches[0]
-                                break
-                        if viewing_dir:
-                            if options['indexing']:
-                                request.set_header('Content-Type', 'text/html')
-                                (_, dirs, fils) = next(os.walk(ospath))
-                                index = '''<strong>Files</strong>
-        <ul>
-'''
-                                for fil in fils:
-                                    index += '            <li><a href="' + fil + '">' + fil + '</a></li>\n'
-                                if not len(fils):
-                                    index += '            <small>(none)</small>\n'
-                                index += '''        </ul>
-        <strong>Directories</strong>
-        <ul>
-'''
-                                for dir in dirs:
-                                    index += '            <li><a href="' + dir + '/">' + dir + '/</a></li>\n'
-                                if not len(dirs):
-                                    index += '            <small>(none)</small>\n'
-                                index += '        </ul>'
-                                response = self._minipyp._index.format(request.path, index, __version__)
-                                self._respond(request, response.encode('utf-8'))
-                                file = False
-                                break
-                            self._give_error(request, 403)
-                        path.pop()
-                    if file is None:
-                        self._give_error(request, 404)
-                    elif file is not False:
-                        request.file = file
-                        self._respond(request, self._render(request, file, options))
-                else:
-                    self._give_error(request, 403)
+                            if not options['static']:
+                                matches = glob.glob(os.path.join(ospath, 'catchall.*'))
+                                if len(matches):
+                                    file = matches[0]
+                                    break
+                            if viewing_dir:
+                                if options['indexing']:
+                                    request.set_header('Content-Type', 'text/html')
+                                    (_, dirs, fils) = next(os.walk(ospath))
+                                    index = '<strong>Files</strong>\n        <ul>\n'
+                                    for fil in fils:
+                                        index += '            <li><a href="' + fil + '">' + fil + '</a></li>\n'
+                                    if not len(fils):
+                                        index += '            <small>(none)</small>\n'
+                                    index += '        </ul>\n        <strong>Directories</strong>\n        <ul>\n'
+                                    for dir in dirs:
+                                        index += '            <li><a href="' + dir + '/">' + dir + '/</a></li>\n'
+                                    if not len(dirs):
+                                        index += '            <small>(none)</small>\n'
+                                    index += '        </ul>'
+                                    response = self._minipyp._index.format(request.path, index, __version__)
+                                    self._respond(request, response.encode('utf-8'))
+                                    file = False
+                                    break
+                                self._give_error(request, 403)
+                            path.pop()
+                        if file is None:
+                            self._give_error(request, 404)
+                        elif file is not False:
+                            request.file = file
+                            self._respond(request, self._render(request, file, options))
+                    else:
+                        self._give_error(request, 403)
             except:
+                print_exc()
                 self._give_error(Request(bare=lines), 500, traceback=format_exc())
         else:
             self._keepalive = False
@@ -263,27 +299,29 @@ class Server(asyncio.Protocol):
             request.set_header('Keep-Alive', 'timeout=' + str(self._timeout))
         if 'Content-Type' not in request._response_headers:
             request.set_header('Content-Type', 'text/plain')
-        sha1 = hashlib.sha1()
-        sha1.update(data)
-        request.set_header('Etag', '"' + sha1.hexdigest() + '"')
         request.set_header('Date', formatdate(usegmt=True))
         request.set_header('Server', 'MiniPyP/' + __version__)
         has_body = False
-        if len(data) and (request.bare or request.method != 'HEAD'):
+        if data is not None and len(data) and (request.bare or request.method != 'HEAD'):
             has_body = True
-            if 'gzip' in request.headers.get('Accept-Encoding', ''):
-                request.set_header('Content-Encoding', 'gzip')
-                request.set_header('Vary', 'Accept-Encoding')
+            if request._response_headers.get('Transfer-Encoding', '') != 'chunked':
                 data = gzip.compress(data)
+                sha1 = hashlib.sha1()
+                sha1.update(data)
+                request.set_header('Etag', '"' + sha1.hexdigest() + '"')
+                request.set_header('Content-Length', str(len(data)))
+                if 'gzip' in request.headers.get('Accept-Encoding', ''):
+                    request.set_header('Content-Encoding', 'gzip')
+                    request.set_header('Vary', 'Accept-Encoding')
         for key, value in request._response_headers.items():
             self._write((key + ': ' + value).encode('utf-8'))
         self._write(b'')
         if has_body:
-            request.set_header('Content-Length', str(len(data)))
             self._write(data)
 
     def _write(self, data: bytes):
-        self._transport.write(data + b'\r\n')
+        print(data)
+        self._transport.write(data + (b'\r\n' if data[-2:] != b'\r\n' else b''))
 
 
 class MiniPyP:

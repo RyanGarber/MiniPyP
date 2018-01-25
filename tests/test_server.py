@@ -1,10 +1,13 @@
-from minipyp import MiniPyP, Handler
+from minipyp import *
 
 # An example server
 MiniPyP(host='0.0.0.0', port=80, sites=[
     {
         'uris': ['127.0.0.1', 'localhost'],
-        'root': 'C:\\Users\\Ryan\\Documents\\Public'
+        'root': 'C:\\Users\\Ryan\\Documents\\Public',
+        'proxies': {
+            '\\/api\\/(.*)': 'http://api.tripteller.co/2/{0}'
+        }
     }
 ], directories={
     'C:\\': {
