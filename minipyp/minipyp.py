@@ -143,42 +143,37 @@ class Server(asyncio.Protocol):
                 request = Request(self, full=lines)
                 print('[' + self._peer[0] + '] ' + request.method + ' ' + request.path)
                 request.site = self._minipyp.get_site(request.host)
+                path_opts = self._minipyp.get_path(request.path, request.site)
                 proxy = None
-                if request.site and 'proxies' in request.site:
-                    for loc, url in request.site['proxies'].items():
-                        matches = re.match(loc, request.path)
-                        if matches:
-                            proxy_p = urlparse(url)
-                            proxy = proxy_p.scheme + '://' + proxy_p.netloc
-                            groups = matches.groups()
-                            i = 0
-                            request.path = proxy_p.path
-                            if proxy_p.query and len(proxy_p.query):
-                                request.path = request.path + '?' + proxy_p.query
-                            if len(groups):
-                                request.path = request.path.replace('{' + str(i) + '}', groups[i])
-                                i += 1
+                if path_opts['proxy']:
+                    proxy_p = urlparse(path_opts['proxy'])
+                    proxy = proxy_p.scheme + '://' + proxy_p.netloc
+                    request.uri = proxy_p.path + request.uri
                 if proxy:
-                    print('[' + request.peer[0] + '] Forwarding to: ' + proxy + request.path)
+                    print('[' + request.peer[0] + '] Forwarding to: ' + proxy + request.uri)
                     if 'X-Forwarded-Host' not in request.headers:
                         request.headers['X-Forwarded-Host'] = request.host
-                    r = requests.request(request.method, proxy + request.path, stream=True,
-                                         headers=request.headers, data=request.body)
-                    request.set_status(str(r.status_code) + ' ' + r.reason)
-                    request._response_headers = r.headers
-                    if r.headers.get('Transfer-Encoding', '') == 'chunked':
-                        i = 0
-                        for chunk in r.iter_content(chunk_size=None):
-                            chunk = hex(len(chunk))[2:].encode('latin_1') + b'\r\n' + chunk + b'\r\n'
-                            if i == 0:
-                                self._respond(request, chunk)
-                            else:
-                                self._write(chunk)
-                            i += 1
-                        self._write(b'0\r\n\r\n')
-                    else:
-                        self._respond(request, r.content)
-                    r.close()
+                    try:
+                        r = requests.request(request.method, proxy + request.uri, stream=True,
+                                             headers=request.headers, data=request.body)
+                        request.set_status(str(r.status_code) + ' ' + r.reason)
+                        request._response_headers = r.headers
+                        if r.headers.get('Transfer-Encoding', '') == 'chunked':
+                            i = 0
+                            for chunk in r.iter_content(chunk_size=None):
+                                chunk = hex(len(chunk))[2:].encode('latin_1') + b'\r\n' + chunk + b'\r\n'
+                                if i == 0:
+                                    self._respond(request, chunk)
+                                else:
+                                    self._write(chunk)
+                                i += 1
+                            self._write(b'0\r\n\r\n')
+                        else:
+                            self._respond(request, r.content)
+                        r.close()
+                    except:
+                        print_exc()
+                        self._give_error(request, 502, traceback=format_exc())
                 else:
                     request.root = request.site['root'] if request.site else self._minipyp._root
                     if request.protocol == 'HTTP/1.1':
@@ -194,7 +189,7 @@ class Server(asyncio.Protocol):
                     path = [''] + path
                     file = None
                     full_ospath = os.path.join(request.root, *path)
-                    options = self._minipyp.get_options(full_ospath)
+                    options = self._minipyp.get_directory(full_ospath)
                     if options['public']:
                         for i in range(len(path)):
                             ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
@@ -265,7 +260,12 @@ class Server(asyncio.Protocol):
         self._transport.close()
 
     def _give_error(self, request: Request, error: int, **kwargs):
-        status = {403: 'Forbidden', 404: 'Not Found', 500: 'Internal Server Error'}[error]
+        status = {
+            403: 'Forbidden',
+            404: 'Not Found',
+            500: 'Internal Server Error',
+            502: 'Bad Gateway'
+        }[error]
         request.set_status(str(error) + ' ' + status)
         page = self._minipyp._error_pages[error]
         html = 'MiniPyP encountered a ' + str(error) + '. The custom error page is missing or invalid.'
@@ -320,7 +320,6 @@ class Server(asyncio.Protocol):
             self._write(data)
 
     def _write(self, data: bytes):
-        print(data)
         self._transport.write(data + (b'\r\n' if data[-2:] != b'\r\n' else b''))
 
 
@@ -371,7 +370,7 @@ class MiniPyP:
 </html>'''
 
     def __init__(self, host='0.0.0.0', port=80, root='/var/www/html', timeout=15,
-                 sites=None, handlers=None, error_pages=None, mime_types=None, directories=None):
+                 sites=None, handlers=None, error_pages=None, mime_types=None, directories=None, paths=None):
         """
         Configure the MiniPyP server.
 
@@ -383,7 +382,8 @@ class MiniPyP:
         :param handlers: dict of file handlers [extension: Handler] (see MiniPyP.add_handler)
         :param error_pages: dict of error pages {code: page}
         :param mime_types: dict of MIME types {extension: type}
-        :param directories: list of directories
+        :param directories: dict of directories {path/regex: options}
+        :param paths: list of global paths {path/regex: options}
         """
         self._host = host
         self._port = port
@@ -394,6 +394,7 @@ class MiniPyP:
         self._error_pages = error_pages or {}
         self._mime_types = mime_types or {}
         self._directories = directories or {}
+        self._paths = paths or {}
         self.add_handler('py', 'text/html', PyHandler())
         _default(self._error_pages, 403, {
             'html': self._error_template.format('403 Forbidden',
@@ -409,6 +410,12 @@ class MiniPyP:
         _default(self._error_pages, 500, {
             'html': self._error_template.format('500 Internal Server Error',
                                                 '''<p>An error occurred while displaying this page:</p>
+        <pre>{traceback}</pre>''',
+                                                __version__)
+        })
+        _default(self._error_pages, 502, {
+            'html': self._error_template.format('502 Bad Gateway',
+                                                '''<p>An error occurred with the server handling this request:</p>
         <pre>{traceback}</pre>''',
                                                 __version__)
         })
@@ -517,7 +524,7 @@ class MiniPyP:
         self._mime_types[extension] = mime_type
         self._handlers[extension] = handler
 
-    def get_site(self, host):
+    def get_site(self, host: str):
         """
         Get the site object for any given host.
         :param host: the hostname to look up
@@ -528,9 +535,35 @@ class MiniPyP:
                 return site
         return None
 
-    def get_options(self, dir: str):
+    def get_path(self, path: str, site: dict=None):
         """
-        Get the options for any given directory, defaulting if one is not set.
+        Get the options for any given path, defaulting if no options were set.
+        If a site is given, it will be applied after any global options for the path.
+        :param path: URI (e.g. '/mypath')
+        :param site: site object (see MiniPyP.get_site)
+        :return: dict
+        """
+        options = {
+            'proxy': None
+        }
+        for cpath in sorted(self._paths, key=len):
+            cpath = str(cpath)
+            opts = self._paths[cpath]
+            if path.startswith(cpath) or re.match(cpath, path):
+                if 'proxy' in opts:
+                    options['proxy'] = opts['proxy']
+        if site and 'paths' in site:
+            for cpath in sorted(site['paths'], key=len):
+                cpath = str(cpath)
+                opts = site['paths'][cpath]
+                if path.startswith(cpath) or re.match(cpath, path):
+                    if 'proxy' in opts:
+                        options['proxy'] = opts['proxy']
+        return options
+
+    def get_directory(self, dir: str):
+        """
+        Get the options for any given directory, defaulting if no options were set.
         :param dir: OS-specific directory path
         :return: dict
         """
@@ -544,7 +577,7 @@ class MiniPyP:
         for path in sorted(self._directories, key=len):
             path = str(path)
             opts = self._directories[path]
-            if dir.lower().startswith(path.lower()):
+            if dir.startswith(path) or re.match(path, dir):
                 if 'public' in opts:
                     options['public'] = opts['public']
                 if 'static' in opts:
