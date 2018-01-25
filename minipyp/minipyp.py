@@ -37,12 +37,17 @@ class PyHandler(Handler):
         result = mod.render(minipyp, request)
         os.chdir(cwd)
         sys.path.remove(cwd_temp)
-        if type(result) == str:
-            charset = 'utf-8'
+        if result is None:
+            return b''
+        elif type(result) != bytes:
+            charset = 'latin_1'
             if 'Content-Type' in request._response_headers:
                 if 'charset=' in request._response_headers['Content-Type']:
                     charset = request._response_headers['Content-Type'].split('charset=')[1]
-            result = result.encode(charset)
+            try:
+                return str(result).encode(charset.replace('-', '_'))  # will this cover all encodings?
+            except UnicodeEncodeError:
+                raise Exception('non-' + charset + ' value returned, please specify the charset in the Content-Type')
         return result
 
 
