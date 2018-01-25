@@ -37,6 +37,7 @@ class PyHandler(Handler):
         result = mod.render(minipyp, request)
         os.chdir(cwd)
         sys.path.remove(cwd_temp)
+        del sys.modules['page']
         if type(result) == str:
             charset = 'utf-8'
             if 'Content-Type' in request._response_headers:
@@ -129,7 +130,6 @@ class Server(asyncio.Protocol):
             print(e)
 
     def data_received(self, data):
-        print(data)
         lines = list(map(lambda x: x.decode('utf-8'), data.split(b'\r\n')))
         if len(lines):
             try:
