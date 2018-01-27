@@ -18,4 +18,4 @@ MiniPyP(host='0.0.0.0', port=80, sites=[
     'C:\\Users\\Ryan\\Documents\\Public': {
         'public': True
     }
-}).start()
+}, daemon=True)

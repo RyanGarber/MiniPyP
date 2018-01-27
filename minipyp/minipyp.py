@@ -1,14 +1,15 @@
-# from requests import Request as HRequest, Session as HSession
 import asyncio
 import glob
 import gzip
 import hashlib
 import importlib.util
+import logging
 import os
 import re
 import signal
 import sys
 from email.utils import formatdate
+from logging.handlers import RotatingFileHandler
 from traceback import format_exc, print_exc
 from urllib.parse import urlparse, parse_qs
 
@@ -123,8 +124,10 @@ class Server(asyncio.Protocol):
         self._timeout = minipyp._timeout
         self._timing = None
         self._peer = '[unknown]'
+        self.log = logging.getLogger(__name__)
 
     def connection_made(self, transport):
+        self._minipyp.log.info('')
         self._peer = transport.get_extra_info('peername')
         self._transport = transport
         self._keepalive = True
@@ -133,6 +136,7 @@ class Server(asyncio.Protocol):
 
     def connection_lost(self, e):
         if e:
+            self.log.warning('Connection lost')
             print('[' + self._peer[0] + '] Connection lost')
             print(e)
 
@@ -369,8 +373,9 @@ class MiniPyP:
     </body>
 </html>'''
 
-    def __init__(self, host='0.0.0.0', port=80, root='/var/www/html', timeout=15,
-                 sites=None, handlers=None, error_pages=None, mime_types=None, directories=None, paths=None):
+    def __init__(self, host='0.0.0.0', port=80, root='/var/www/html', timeout=15, daemon=False,
+                 sites=None, handlers=None, error_pages=None, mime_types=None, directories=None, paths=None,
+                 log=None, error_log=None):
         """
         Configure the MiniPyP server.
 
@@ -384,7 +389,35 @@ class MiniPyP:
         :param mime_types: dict of MIME types {extension: type}
         :param directories: dict of directories {path/regex: options}
         :param paths: list of global paths {path/regex: options}
+        :param daemon: run this server as a daemon & add command-line interface
+        :param log: logfile for all events
+        :param error_log: logfile for errors
         """
+        if daemon:
+            if len(sys.argv) == 2:
+                if sys.argv[1] == '-v' or sys.argv[1] == '--version':
+                    print('minipyp: v' + __version__)
+                elif sys.argv[1] == '-h' or sys.argv[1] == '--help':
+                    print('minipyp: commands')
+                    print()
+                    print('  ' + sys.argv[0] + ' start: start the server')
+                    print('  ' + sys.argv[0] + ' stop: stop the server')
+                    print('  ' + sys.argv[0] + ' restart: restart the server')
+                    print()
+                    print('minipyp: flags')
+                    print()
+                    print('  ' + sys.argv[0] + ' --help (-h): do what you just did')
+                    print('  ' + sys.argv[0] + ' --version (-v): get the installed version')
+                elif sys.argv[1] == 'start':
+                    print('minipyp: starting on ' + host + ':' + str(port))
+                elif sys.argv[1] == 'stop':
+                    print('minipyp: stopping')
+                elif sys.argv[1] == 'restart':
+                    print('minipyp: restarting')
+                else:
+                    print('minipyp: invalid usage, see --help (-h)')
+            else:
+                print('minipyp: invalid usage, see --help (-h)')
         self._host = host
         self._port = port
         self._root = root
@@ -482,17 +515,28 @@ class MiniPyP:
         _default(self._mime_types, 'ttf', 'application/x-font-ttf')
         _default(self._mime_types, 'ttc', 'application/x-font-ttf')
         _default(self._mime_types, 'otf', 'font/opentype')
+        self.log = logging.getLogger(__name__)
+        logging.Formatter('')
+        if log:
+            handler = RotatingFileHandler(log)
+            handler.setLevel(logging.INFO)
+            handler.setFormatter()
+            self.log.addHandler(handler)
+        if error_log:
+            handler = RotatingFileHandler(error_log)
+            handler.setLevel(logging.WARNING)
+            self.log.addHandler(handler)
 
     def start(self):
         """Start the server."""
+        self.log.info('Starting')
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         if sys.platform == 'win32':
             asyncio.set_event_loop(asyncio.ProactorEventLoop())
         loop = asyncio.get_event_loop()
         coro = loop.create_server(lambda: Server(self), self._host, self._port)
-        server = loop.run_until_complete(coro)
-        sockname = server.sockets[0].getsockname()
-        print('Starting MiniPyP server on ' + sockname[0] + ':' + str(sockname[1]))
+        loop.run_until_complete(coro)
+        self.log.info('Listening on ' + self._host + ':' + str(self._port))
         try:
             loop.run_forever()
         except KeyboardInterrupt:
@@ -502,7 +546,7 @@ class MiniPyP:
 
     def stop(self):
         """Stop the server."""
-        print('Cleaning up...')
+        self.log.info('Stopping')
 
     def add_site(self, site):
         """
