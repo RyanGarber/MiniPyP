@@ -3,9 +3,15 @@ MiniPyP
 #######
 A more traditional web server in Python
 
+.. image:: https://badge.fury.io/py/minipyp.svg
+    :target: https://badge.fury.io/py/minipyp
+    :alt: Release Status
 .. image:: https://readthedocs.org/projects/minipyp/badge/?version=latest
-  :target: http://minipyp.readthedocs.io/en/latest/?badge=latest
-  :alt: Documentation Status
+    :target: http://minipyp.readthedocs.io/en/latest/?badge=latest
+    :alt: Documentation Status
+.. image:: https://travis-ci.org/RyanGarber/minipyp.svg?branch=master
+    :target: https://travis-ci.org/RyanGarber/minipyp
+    :alt: Build Status
 
 About the project
 =================
