@@ -1,9 +1,11 @@
 #######
 MiniPyP
 #######
----------------------------------------
 A more traditional web server in Python
----------------------------------------
+
+.. image:: https://readthedocs.org/projects/minipyp/badge/?version=latest
+  :target: http://minipyp.readthedocs.io/en/latest/?badge=latest
+  :alt: Documentation Status
 
 About the project
 =================

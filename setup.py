@@ -5,6 +5,8 @@ from setuptools import setup, find_packages
 here = path.abspath(path.dirname(__file__))
 with open(path.join(here, 'README.rst'), encoding='utf-8') as file:
     readme = file.read()
+with open(path.join(here, 'HISTORY.rst'), encoding='utf-8') as file:
+    readme += '\n\n' + file.read()
 there = {}
 with open(path.join(here, 'minipyp', 'minipyp.py'), encoding='utf-8') as file:
     exec(file.read(), there)
@@ -32,7 +34,7 @@ setup(
     keywords='http https web cgi fast-cgi fpm ssl tls socket proxy reverse',
     packages=find_packages(exclude=['docs', 'tests']),
     download_url='https://github.com/RyanGarber/minipyp/archive/0.1.0b1.tar.gz',
-    install_requires=['requests', 'h2'],
+    install_requires=[],
     extras_require={'tests': ['unittest']},
     python_requires='>=3'
 )
