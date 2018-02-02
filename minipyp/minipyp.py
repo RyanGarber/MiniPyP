@@ -371,8 +371,9 @@ class Server(asyncio.Protocol):
                 kwargs['uri'] = request.path
             for var, value in kwargs.items():
                 html = html.replace('{' + var + '}', value)
-            html = html.encode('utf-8')
             request.set_header('Content-Type', 'text/html')
+        if type(html) == str:
+            html = html.encode('utf-8')
         self._respond(request, html)
 
     def _render(self, request: Request, file: str, opts=None):
@@ -858,7 +859,7 @@ class MiniPyP:
         """
         pages = self.get_directory(directory)['error_pages'] if directory else self._config['error_pages']
         if code in pages:
-            return pages
+            return pages[code]
         return None
 
     def write_config(self, to: str=None):
