@@ -959,7 +959,7 @@ class MiniPyP:
         if 'directories' in config and (not part or part == 'directories'):
             if type(config['directories']) != dict:
                 raise ConfigError('`Directories` must be a dict[path, options]')
-            for path, opts in config['directories']:
+            for path, opts in config['directories'].items():
                 if not os.path.exists(path):
                     log.warning('Directory in config does not exist: ' + path)
                 if 'public' in opts and type(opts['public']) != bool:
@@ -982,7 +982,7 @@ class MiniPyP:
         if 'paths' in config and (not part or part == 'paths'):
             if type(config['paths']) != dict:
                 raise ConfigError('`Paths` must be a dict[path, options]')
-            for path, opts in config['paths']:
+            for path, opts in config['paths'].items():
                 if 'proxy' in opts:
                     try:
                         uri = urlparse(opts['proxy'])
@@ -990,11 +990,3 @@ class MiniPyP:
                             raise Exception()
                     except Exception as e:
                         raise ConfigError('`Proxy` must be a valid URL in path: ' + path + ' - ' + str(e))
-        if 'handlers' in config and (not part or part == 'handlers'):
-            if type(config['handlers']) != dict:
-                raise ConfigError('`Handlers` must be a dict[extension, Handler]')
-            for ext, handler in config['handlers'].items():
-                if not re.match(r'\w+', ext):
-                    raise ConfigError('`Handlers` key must be a valid file extension without the dot')
-                if not isinstance(handler, Handler):
-                    raise ConfigError('`Handlers` value must be an object of type minipyp.Handler')
