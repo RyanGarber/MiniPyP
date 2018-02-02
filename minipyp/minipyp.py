@@ -72,7 +72,9 @@ def _translate(config: dict):
             items = value[:]
             new[key] = []
             for item in items:
-                new[key].append(_translate(item))
+                if type(item) == dict:
+                    item = _translate(item)
+                new[key].append(item)
         else:
             new[key] = value
     return new
