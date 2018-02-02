@@ -68,6 +68,11 @@ def _translate(config: dict):
         key = key.lower().replace(' ', '_').replace('\'', '')
         if type(value) == dict:
             new[key] = _translate(value)
+        elif type(value) == list:
+            items = value[:]
+            new[key] = []
+            for item in items:
+                new[key].append(_translate(item))
         else:
             new[key] = value
     return new
