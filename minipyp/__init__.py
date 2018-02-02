@@ -178,7 +178,7 @@ def main():
             if sys.platform == 'win32':
                 config = os.path.join(os.getenv('APPDATA'), 'MiniPyP')
             else:
-                config = os.path.join(os.sep, 'minipyp')
+                config = os.path.join(os.sep, 'etc', 'minipyp')
             if not os.path.exists(config):
                 os.makedirs(config)
             config = os.path.join(config, 'minipyp.conf')
@@ -188,7 +188,7 @@ def main():
             with open(config, 'w') as conf:
                 conf.write(basic_config)
     level = minipyp.log.getEffectiveLevel()
-    if args.verbose:
+    if hasattr(args, 'verbose') and args.verbose:
         minipyp.log.setLevel(logging.DEBUG)
     if args.do == 'start':
         print('minipyp: starting server...')
@@ -208,5 +208,5 @@ def main():
         status(args)
     else:
         proc.print_usage()
-    if args.verbose:
+    if hasattr(args, 'verbose') and args.verbose:
         minipyp.log.setLevel(level)
