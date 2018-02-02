@@ -618,8 +618,10 @@ class MiniPyP:
     def stop(self):
         """Stop the server."""
         log.info('Shutting down...')
-        self.coro.close()
-        self.loop.stop()
+        if self.coro:
+            self.coro.close()
+        if self.loop:
+            self.loop.stop()
         for task in asyncio.Task.all_tasks():
             task.cancel()
 
