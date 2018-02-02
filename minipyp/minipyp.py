@@ -7,15 +7,49 @@ import logging
 import os
 import re
 import signal
+import socket
 import sys
+import threading
 from email.utils import formatdate
 from logging.handlers import RotatingFileHandler
 from traceback import format_exc, print_exc
 from urllib.parse import urlparse, parse_qs
 
 import requests
+import yaml
 
-__version__ = '0.1.0b1'
+
+class MiniFormatter(logging.Formatter):
+    def __init__(self):
+        super().__init__(fmt='[%(asctime)s] %(levelname)s: %(message)s%(peer)s', datefmt='%m-%d-%Y %I:%M:%S %p')
+
+    def format(self, record):
+        if not hasattr(record, 'peer'):
+            record.peer = ''
+        else:
+            record.peer = ' [' + record.peer + ']'
+        return super().format(record)
+
+
+class MiniFilter(logging.Handler):
+    def __init__(self, min, max=None):
+        super().__init__()
+        self.min = min or logging.NOTSET
+        self.max = max or logging.FATAL
+
+    def filter(self, record):
+        return self.min <= record.levelno <= self.max
+
+    def emit(self, record):
+        super().emit(record)
+
+
+__version__ = '0.2.0'
+log = logging.getLogger('minipyp')
+log.setLevel(logging.INFO)
+stream = logging.StreamHandler()
+stream.setFormatter(MiniFormatter())
+log.addHandler(stream)
 
 
 def _default(obj: dict, key, default):
@@ -23,9 +57,37 @@ def _default(obj: dict, key, default):
         obj[key] = default
 
 
+def _except(error: str, extra: dict=None, fatal: bool=False):
+    log.fatal(error, extra=extra) if fatal else log.error(error, extra=extra)
+    raise Exception(error)
+
+
+def _translate(config: dict):
+    new = {}
+    for key, value in config.items():
+        key = key.lower().replace(' ', '_').replace('\'', '')
+        if type(value) == dict:
+            new[key] = _translate(value)
+        else:
+            new[key] = value
+    return new
+
+
+def _capitalize(string: str, reset: bool=False):
+    if reset:
+        string = string.lower()
+    new = ''
+    for i in range(len(string)):
+        if i == 0:
+            new += string[i].upper()
+        elif string[i - 1] == '-':
+            new += string[i].upper()
+    return string
+
+
 class Handler:
     def handle(self, minipyp, request):
-        raise Exception('Handler requires handle()')
+        _except('Handler for file ' + request.file + ' has no handle() method')
 
 
 class PyHandler(Handler):
@@ -51,40 +113,39 @@ class PyHandler(Handler):
             try:
                 return str(result).encode(charset.replace('-', '_'))  # will this cover all encodings?
             except UnicodeEncodeError:
-                raise Exception('non-' + charset + ' value returned, please specify the charset in the Content-Type')
+                _except('Non-' + charset + ' value returned by handler, Content-Type does not contain correct encoding')
         return result
 
 
 class Request:
-    def __init__(self, server=None, bare=None, full=None):
+    def __init__(self, minipyp, server, bare=None, full=None):
         self._status = None
         self._response_headers = {}
         self.bare = bool(bare)
         if full:
             # Full Request object
-            self.peer = server._peer
             proto = full[0].split()
             if len(proto) != 3:
-                raise Exception('Invalid request line')
+                _except('Failed to parse initial request line', server.extra)
             self.method = proto[0]
             self.protocol = proto[2]
             if self.protocol not in ['HTTP/1.0', 'HTTP/1.1']:
-                raise Exception('Invalid protocol')
+                _except('Invalid protocol `' + self.protocol + '`', server.extra)
             self.headers = {}
             try:
                 for line in full[1:]:
                     if line == '':
                         break
                     key, value = line.split(': ', 1)
-                    self.headers[key] = value
+                    self.headers[_capitalize(key)] = value
             except:
-                raise Exception('Malformed headers')
+                _except('Headers seem to be malformed', server.extra)
             uri = urlparse(proto[1])
             self.scheme = uri.scheme or 'http'  # TODO SSL
             try:
                 self.host = uri.netloc or self.headers['Host']
             except:
-                raise Exception('No host provided')
+                _except('No host was provided in headers or request line', server.extra)
             self.path = uri.path
             self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')
             self.query = parse_qs(uri.query, True)
@@ -97,16 +158,36 @@ class Request:
         elif bare:
             # Barebones Request object (for error handling)
             self.protocol = 'HTTP/1.0'
+            self.host = None
+            self.file = None
             if len(bare):
-                if bare[:5] == 'HTTP/' and ' ' in bare:
-                    self.protocol = bare.split()[0]
+                args = bare[0].split()
+                if len(args) == 3:
+                    try:
+                        uri = urlparse(args[1])
+                        if uri.netloc:
+                            self.host = uri.netloc
+                            self.path = uri.path
+                        else:
+                            self.path = uri.path
+                    except ValueError:
+                        pass
+                    if args[2] in ['HTTP/1.0', 'HTTP/1.1', 'HTTP/2.0']:
+                        self.protocol = args[2]
             self.headers = {}
             for line in bare[1:]:
                 if line == '':
                     break
                 if ': ' in line:
                     key, value = line.split(': ', 1)
-                    self.headers[key] = value
+                    self.headers[_capitalize(key)] = value
+            if not self.host and 'Host' in self.headers:
+                self.host = self.headers['Host']
+            if self.host:
+                self.site = minipyp.get_site(self.host)
+                self.file = self.site['root'] if self.site else minipyp._config['root']
+                if self.path:
+                    self.file += self.path
 
     def set_header(self, name: str, value: str):
         self._response_headers[name] = value
@@ -121,31 +202,31 @@ class Server(asyncio.Protocol):
         self._loop = asyncio.get_event_loop()
         self._transport = None
         self._keepalive = None
-        self._timeout = minipyp._timeout
+        self._timeout = minipyp._config['timeout']
         self._timing = None
-        self._peer = '[unknown]'
-        self.log = logging.getLogger(__name__)
+        self.extra = {
+            'peer': 'unknown peer'
+        }
 
     def connection_made(self, transport):
-        self._minipyp.log.info('')
-        self._peer = transport.get_extra_info('peername')
+        peer = transport.get_extra_info('peername')
+        self.extra['peer'] = peer[0] + ':' + str(peer[1])
         self._transport = transport
         self._keepalive = True
         if self._timeout:
             self._timing = self._loop.call_later(self._timeout, self.on_timeout)
+        log.debug('Connected', extra=self.extra)
 
     def connection_lost(self, e):
         if e:
-            self.log.warning('Connection lost')
-            print('[' + self._peer[0] + '] Connection lost')
-            print(e)
+            log.warning('Connection lost: ' + str(e), extra=self.extra)
 
     def data_received(self, data):
         lines = list(map(lambda x: x.decode('utf-8'), data.split(b'\r\n')))
         if len(lines):
             try:
-                request = Request(self, full=lines)
-                print('[' + self._peer[0] + '] ' + request.method + ' ' + request.path)
+                request = Request(self._minipyp, self, full=lines)
+                log.info(request.method + ' ' + request.path, extra=self.extra)
                 request.site = self._minipyp.get_site(request.host)
                 path_opts = self._minipyp.get_path(request.path, request.site)
                 proxy = None
@@ -154,7 +235,7 @@ class Server(asyncio.Protocol):
                     proxy = proxy_p.scheme + '://' + proxy_p.netloc
                     request.uri = proxy_p.path + request.uri
                 if proxy:
-                    print('[' + request.peer[0] + '] Forwarding to: ' + proxy + request.uri)
+                    log.info('Forwarding client to: ' + proxy + request.uri, extra=self.extra)
                     if 'X-Forwarded-Host' not in request.headers:
                         request.headers['X-Forwarded-Host'] = request.host
                     try:
@@ -179,7 +260,7 @@ class Server(asyncio.Protocol):
                         print_exc()
                         self._give_error(request, 502, traceback=format_exc())
                 else:
-                    request.root = request.site['root'] if request.site else self._minipyp._root
+                    request.root = request.site['root'] if request.site else self._minipyp._config['root']
                     if request.protocol == 'HTTP/1.1':
                         self._keepalive = request.headers['Connection'] != 'close'
                     else:
@@ -242,13 +323,14 @@ class Server(asyncio.Protocol):
                         if file is None:
                             self._give_error(request, 404)
                         elif file is not False:
+                            log.debug('Serving file: ' + file, extra=self.extra)
                             request.file = file
                             self._respond(request, self._render(request, file, options))
                     else:
                         self._give_error(request, 403)
             except:
                 print_exc()
-                self._give_error(Request(bare=lines), 500, traceback=format_exc())
+                self._give_error(Request(self._minipyp, self, bare=lines), 500, traceback=format_exc())
         else:
             self._keepalive = False
         if not self._keepalive:
@@ -260,7 +342,7 @@ class Server(asyncio.Protocol):
             self._timing = self._loop.call_later(self._timeout, self.on_timeout)
 
     def on_timeout(self):
-        print('[' + self._peer[0] + '] Timed out')
+        log.debug('Connection timed out', extra=self.extra)
         self._transport.close()
 
     def _give_error(self, request: Request, error: int, **kwargs):
@@ -271,7 +353,7 @@ class Server(asyncio.Protocol):
             502: 'Bad Gateway'
         }[error]
         request.set_status(str(error) + ' ' + status)
-        page = self._minipyp._error_pages[error]
+        page = self._minipyp.get_error_page(error, request.file)
         html = 'MiniPyP encountered a ' + str(error) + '. The custom error page is missing or invalid.'
         if 'file' in page:
             if os.path.isfile(page['file']):
@@ -289,10 +371,12 @@ class Server(asyncio.Protocol):
     def _render(self, request: Request, file: str, opts=None):
         ext = file.split('.')[-1]
         handle = not opts or ext not in opts['dont_handle']
-        mime = self._minipyp._mime_types[ext.lower()] if ext.lower() in self._minipyp._mime_types else 'text/plain'
+        mime = self._minipyp.get_mime_type(ext) or 'text/plain'
         request.set_header('Content-Type', mime if handle else 'text/plain')
-        if ext in self._minipyp._handlers and handle:
-            return self._minipyp._handlers[ext].handle(self._minipyp, request)
+        if handle:
+            handler = self._minipyp.get_handler(ext)
+            if handler:
+                return handler.handle(self._minipyp, request)
         request.set_header('Last-Modified', formatdate(timeval=os.path.getmtime(file), usegmt=True))
         with open(file, 'rb') as f:
             return f.read()
@@ -325,6 +409,11 @@ class Server(asyncio.Protocol):
 
     def _write(self, data: bytes):
         self._transport.write(data + (b'\r\n' if data[-2:] != b'\r\n' else b''))
+
+
+class ConfigError(ValueError):
+    def __init__(self, *args):
+        super().__init__(*args)
 
 
 class MiniPyP:
@@ -373,211 +462,295 @@ class MiniPyP:
     </body>
 </html>'''
 
-    def __init__(self, host='0.0.0.0', port=80, root='/var/www/html', timeout=15, daemon=False,
-                 sites=None, handlers=None, error_pages=None, mime_types=None, directories=None, paths=None,
-                 log=None, error_log=None):
+    def __init__(self, config):
         """
         Configure the MiniPyP server.
 
-        :param host: the IP to bind to (0.0.0.0 for all)
-        :param port: the port to bind to
-        :param root: document root when no site applies
-        :param timeout: default timeout for keep-alive connections
-        :param sites: list of sites (see MiniPyP.add_site)
-        :param handlers: dict of file handlers [extension: Handler] (see MiniPyP.add_handler)
-        :param error_pages: dict of error pages {code: page}
-        :param mime_types: dict of MIME types {extension: type}
-        :param directories: dict of directories {path/regex: options}
-        :param paths: list of global paths {path/regex: options}
-        :param daemon: run this server as a daemon & add command-line interface
-        :param log: logfile for all events
-        :param error_log: logfile for errors
+        :param config: YAML config file or dict of values
         """
-        if daemon:
-            if len(sys.argv) == 2:
-                if sys.argv[1] == '-v' or sys.argv[1] == '--version':
-                    print('minipyp: v' + __version__)
-                elif sys.argv[1] == '-h' or sys.argv[1] == '--help':
-                    print('minipyp: commands')
-                    print()
-                    print('  ' + sys.argv[0] + ' start: start the server')
-                    print('  ' + sys.argv[0] + ' stop: stop the server')
-                    print('  ' + sys.argv[0] + ' restart: restart the server')
-                    print()
-                    print('minipyp: flags')
-                    print()
-                    print('  ' + sys.argv[0] + ' --help (-h): do what you just did')
-                    print('  ' + sys.argv[0] + ' --version (-v): get the installed version')
-                elif sys.argv[1] == 'start':
-                    print('minipyp: starting on ' + host + ':' + str(port))
-                elif sys.argv[1] == 'stop':
-                    print('minipyp: stopping')
-                elif sys.argv[1] == 'restart':
-                    print('minipyp: restarting')
-                else:
-                    print('minipyp: invalid usage, see --help (-h)')
-            else:
-                print('minipyp: invalid usage, see --help (-h)')
-        self._host = host
-        self._port = port
-        self._root = root
-        self._timeout = timeout
-        self._sites = sites or []
-        self._handlers = handlers or {}
-        self._error_pages = error_pages or {}
-        self._mime_types = mime_types or {}
-        self._directories = directories or {}
-        self._paths = paths or {}
-        self.add_handler('py', 'text/html', PyHandler())
-        _default(self._error_pages, 403, {
-            'html': self._error_template.format('403 Forbidden',
-                                                '<p>You don\'t have permission to view this page.</p>',
-                                                __version__)
-        })
-        _default(self._error_pages, 404, {
-            'html': self._error_template.format('404 Not Found',
-                                                '''<p>The requested page could not be found:</p>
+        self._config = None
+        self._config_file = None
+        self._loop = None
+        self._coro = None
+        self._handlers = {}
+
+        self.load_config(config)
+
+        # Setup log files
+        log_level = logging.INFO
+        if 'log_level' in self._config:
+            log_level = logging._nameToLevel[self._config['log_level'].upper()]
+        log_limit = 25
+        if 'log_limit' in self._config:
+            log_limit = int(self._config['log_limit'])
+        if 'log' in self._config:
+            handler = RotatingFileHandler(self._config['log'], maxBytes=log_limit * 1024)
+            handler.setFormatter(MiniFormatter())
+            handler.addFilter(MiniFilter(log_level, max=logging.WARNING))
+            log.addHandler(handler)
+        if 'error_log' in self._config:
+            handler = RotatingFileHandler(self._config['error_log'], maxBytes=log_limit * 1024)
+            handler.setFormatter(MiniFormatter())
+            handler.addFilter(MiniFilter(logging.WARNING))
+            log.addHandler(handler)
+
+        # Set defaults
+        if 'host' not in self._config:
+            self._config['host'] = '0.0.0.0'
+        if 'port' not in self._config:
+            self._config['port'] = 80
+        if 'timeout' not in self._config:
+            self._config['timeout'] = 15
+        if 'error_pages' not in self._config:
+            self._config['error_pages'] = {}
+        if 'mime_types' not in self._config:
+            self._config['mime_types'] = {}
+        if 'sites' not in self._config:
+            self._config['sites'] = []
+        if 'directories' not in self._config:
+            self._config['directories'] = {}
+        if 'paths' not in self._config:
+            self._config['paths'] = {}
+        if 403 not in self._config['error_pages']:
+            self.set_error_page(403, {
+                'html': self._error_template.format('403 Forbidden',
+                                                    '<p>You don\'t have permission to view this page.</p>',
+                                                    __version__)
+            })
+        if 404 not in self._config['error_pages']:
+            self.set_error_page(404, {
+                'html': self._error_template.format('404 Not Found',
+                                                    '''<p>The requested page could not be found:</p>
         <p><code>{uri}</code></p>''',
-                                                __version__)
-        })
-        _default(self._error_pages, 500, {
-            'html': self._error_template.format('500 Internal Server Error',
-                                                '''<p>An error occurred while displaying this page:</p>
+                                                    __version__)
+            })
+        if 500 not in self._config['error_pages']:
+            self.set_error_page(500, {
+                'html': self._error_template.format('500 Internal Server Error',
+                                                    '''<p>An error occurred while displaying this page:</p>
         <pre>{traceback}</pre>''',
-                                                __version__)
-        })
-        _default(self._error_pages, 502, {
-            'html': self._error_template.format('502 Bad Gateway',
-                                                '''<p>An error occurred with the server handling this request:</p>
+                                                    __version__)
+            })
+        if 502 not in self._config['error_pages']:
+            self.set_error_page(502, {
+                'html': self._error_template.format('502 Bad Gateway',
+                                                    '''<p>An error occurred with the server handling this request:</p>
         <pre>{traceback}</pre>''',
-                                                __version__)
-        })
-        _default(self._mime_types, 'html', 'text/html')
-        _default(self._mime_types, 'shtml', 'text/html')
-        _default(self._mime_types, 'htm', 'text/html')
-        _default(self._mime_types, 'rdf', 'application/xml')
-        _default(self._mime_types, 'xml', 'application/xml')
-        _default(self._mime_types, 'js', 'application/javascript')
-        _default(self._mime_types, 'css', 'text/css')
-        _default(self._mime_types, 'rss', 'application/rss+xml')
-        _default(self._mime_types, 'mid', 'audio/midi')
-        _default(self._mime_types, 'midi', 'audio/midi')
-        _default(self._mime_types, 'aac', 'audio/mp4')
-        _default(self._mime_types, 'm4a', 'audio/mp4')
-        _default(self._mime_types, 'mp3', 'audio/mpeg')
-        _default(self._mime_types, 'ogg', 'audio/ogg')
-        _default(self._mime_types, 'wav', 'audio/x-wav')
-        _default(self._mime_types, 'bmp', 'image/bmp')
-        _default(self._mime_types, 'gif', 'image/gif')
-        _default(self._mime_types, 'jpg', 'image/jpeg')
-        _default(self._mime_types, 'jpeg', 'image/jpeg')
-        _default(self._mime_types, 'png', 'image/png')
-        _default(self._mime_types, 'svg', 'image/svg+xml')
-        _default(self._mime_types, 'tif', 'image/tiff')
-        _default(self._mime_types, 'tiff', 'image/tiff')
-        _default(self._mime_types, 'm4v', 'video/mp4')
-        _default(self._mime_types, 'mp4', 'video/mp4')
-        _default(self._mime_types, 'ogv', 'video/ogg')
-        _default(self._mime_types, 'mov', 'video/quicktime')
-        _default(self._mime_types, 'webm', 'video/webm')
-        _default(self._mime_types, 'flv', 'video/x-flv')
-        _default(self._mime_types, 'wmv', 'video/x-ms-wmv')
-        _default(self._mime_types, 'avi', 'video/x-msvideo')
-        _default(self._mime_types, 'cur', 'image/x-icon')
-        _default(self._mime_types, 'ico', 'image/x-icon')
-        _default(self._mime_types, 'bin', 'application/octet-stream')
-        _default(self._mime_types, 'dll', 'application/octet-stream')
-        _default(self._mime_types, 'dmg', 'application/octet-stream')
-        _default(self._mime_types, 'exe', 'application/octet-stream')
-        _default(self._mime_types, 'img', 'application/octet-stream')
-        _default(self._mime_types, 'iso', 'application/octet-stream')
-        _default(self._mime_types, 'msi', 'application/octet-stream')
-        _default(self._mime_types, 'safariextz', 'application/octet-stream')
-        _default(self._mime_types, 'pdf', 'application/pdf')
-        _default(self._mime_types, 'rtf', 'application/rtf')
-        _default(self._mime_types, '7z', 'application/x-7z-compressed')
-        _default(self._mime_types, 'torrent', 'application/x-bittorrent')
-        _default(self._mime_types, 'crx', 'application/x-chrome-extension')
-        _default(self._mime_types, 'oex', 'application/x-opera-extension')
-        _default(self._mime_types, 'rar', 'application/x-rar-compressed')
-        _default(self._mime_types, 'rpm', 'application/x-redhat-package-manager')
-        _default(self._mime_types, 'crt', 'application/x-x509-ca-cert')
-        _default(self._mime_types, 'der', 'application/x-x509-ca-cert')
-        _default(self._mime_types, 'pem', 'application/x-x509-ca-cert')
-        _default(self._mime_types, 'swf', 'application/x-shockwave-flash')
-        _default(self._mime_types, 'xhtml', 'application/xhtml+xml')
-        _default(self._mime_types, 'zip', 'application/zip')
-        _default(self._mime_types, 'csv', 'text/csv')
-        _default(self._mime_types, 'pl', 'applcation/perl')
-        _default(self._mime_types, 'woff', 'application/font-woff')
-        _default(self._mime_types, 'woff2', 'application/font-woff2')
-        _default(self._mime_types, 'eot', 'application/vnd.ms-fontobject')
-        _default(self._mime_types, 'ttf', 'application/x-font-ttf')
-        _default(self._mime_types, 'ttc', 'application/x-font-ttf')
-        _default(self._mime_types, 'otf', 'font/opentype')
-        self.log = logging.getLogger(__name__)
-        logging.Formatter('')
-        if log:
-            handler = RotatingFileHandler(log)
-            handler.setLevel(logging.INFO)
-            handler.setFormatter()
-            self.log.addHandler(handler)
-        if error_log:
-            handler = RotatingFileHandler(error_log)
-            handler.setLevel(logging.WARNING)
-            self.log.addHandler(handler)
+                                                    __version__)
+            })
+        self.set_mime_type('text/html', 'html', 'shtml', 'htm')
+        self.set_mime_type('text/css', 'css')
+        self.set_mime_type('text/csv', 'csv')
+        self.set_mime_type('application/xml', 'xml', 'rdf')
+        self.set_mime_type('application/javascript', 'js')
+        self.set_mime_type('application/xml', 'xml', 'rdf')
+        self.set_mime_type('application/rss+xml', 'rss')
+        self.set_mime_type('application/octet-stream', 'bin', 'dll', 'dmg', 'exe', 'img', 'iso', 'msi', 'safariextz')
+        self.set_mime_type('application/pdf', 'pdf')
+        self.set_mime_type('application/rtf', 'rtf')
+        self.set_mime_type('application/x-7z-compressed', '7z')
+        self.set_mime_type('application/x-bittorrent', 'torrent')
+        self.set_mime_type('application/x-chrome-extension', 'crx')
+        self.set_mime_type('application/x-opera-extension', 'oex')
+        self.set_mime_type('application/x-rar-compressed', 'rar')
+        self.set_mime_type('application/x-redhat-package-manager', 'rpm')
+        self.set_mime_type('application/x-x509-ca-cert', 'crt', 'der', 'pem')
+        self.set_mime_type('application/x-shockwave-flash', 'swf')
+        self.set_mime_type('application/xhtml+xml', 'xhtml')
+        self.set_mime_type('application/zip', 'zip')
+        self.set_mime_type('application/perl', 'pl')
+        self.set_mime_type('application/font-woff', 'woff')
+        self.set_mime_type('application/font-woff2', 'woff2')
+        self.set_mime_type('application/vns.ms-fontobject', 'eot')
+        self.set_mime_type('application/x-font-ttf', 'ttf', 'ttc')
+        self.set_mime_type('audio/midi', 'mid', 'midi')
+        self.set_mime_type('audio/mp4', 'aac', 'm4a')
+        self.set_mime_type('audio/mpeg', 'mp3')
+        self.set_mime_type('audio/ogg', 'ogg')
+        self.set_mime_type('audio/x-wav', 'wav')
+        self.set_mime_type('image/bmp', 'bmp')
+        self.set_mime_type('image/gif', 'gif')
+        self.set_mime_type('image/jpeg', 'jpg', 'jpeg')
+        self.set_mime_type('image/png', 'png', 'apng')
+        self.set_mime_type('image/svg+xml', 'svg')
+        self.set_mime_type('image/x-icon', 'ico', 'cur')
+        self.set_mime_type('image/tiff', 'tif', 'tiff')
+        self.set_mime_type('video/mp4', 'mp4', 'm4v')
+        self.set_mime_type('video/ogg', 'ogv')
+        self.set_mime_type('video/quicktime', 'mov')
+        self.set_mime_type('video/webm', 'webm')
+        self.set_mime_type('video/x-flv', 'flv')
+        self.set_mime_type('video/x-ms-wmv', 'wmv')
+        self.set_mime_type('video/x-msvideo', 'avi')
+        self.set_mime_type('font/opentype', 'otf')
+        self.set_handler('py', 'text/html', PyHandler())
+        self.loop = None
+        self.coro = None
 
     def start(self):
         """Start the server."""
-        self.log.info('Starting')
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        log.debug('Starting server')
         if sys.platform == 'win32':
             asyncio.set_event_loop(asyncio.ProactorEventLoop())
-        loop = asyncio.get_event_loop()
-        coro = loop.create_server(lambda: Server(self), self._host, self._port)
-        loop.run_until_complete(coro)
-        self.log.info('Listening on ' + self._host + ':' + str(self._port))
+        self.loop = asyncio.get_event_loop()
+        if sys.platform == 'win32':
+            # Get a little hacky for Windows
+            if threading.current_thread() == threading.main_thread():
+                for term in ('SIGINT', 'SIGTERM'):
+                    signal.signal(getattr(signal, term), self.stop)
+            self.loop.call_later(0.1, self._wakeup)
+        else:
+            for term in ('SIGINT', 'SIGTERM'):
+                self.loop.add_signal_handler(getattr(signal, term), self.stop)
+            if hasattr(signal, 'SIGHUP'):
+                self.loop.add_signal_handler(signal.SIGHUP, self.load_config)
+        self.coro = self.loop.create_server(lambda: Server(self), self._config['host'], self._config['port'])
+        self.loop.run_until_complete(self.coro)
+        log.info('Listening on ' + self._config['host'] + ':' + str(self._config['port']) + '...')
         try:
-            loop.run_forever()
-        except KeyboardInterrupt:
+            self.loop.run_forever()
+        except asyncio.CancelledError:
+            log.warning('Server shut down before all tasks could complete')
             pass
         finally:
             self.stop()
 
     def stop(self):
         """Stop the server."""
-        self.log.info('Stopping')
+        log.info('Shutting down...')
+        self.coro.close()
+        self.loop.stop()
+        for task in asyncio.Task.all_tasks():
+            task.cancel()
 
-    def add_site(self, site):
+    def load_config(self, config=None):
+        """
+        Load new config values from the provided dict.
+        If None, and a previously loaded file exists, it will be reloaded.
+        :param config: the new config
+        """
+        if not config:
+            log.info('Configuration reloaded from disk')
+            config = self._config_file
+        if type(config) == str:
+            try:
+                with open(config) as conf:
+                    self._config_file = config
+                    config = _translate(yaml.load(conf))
+            except (IOError, yaml.YAMLError) as e:
+                _except('Failed to read config file: ' + str(e), fatal=True)
+        elif type(config) == dict:
+            self._config_file = None
+        else:
+            _except('Invalid config provided (must be a file path or a dict)', fatal=True)
+        try:
+            self.test_config(config)
+            self._config = config
+        except ConfigError as e:
+            _except('Malformed config: ' + str(e), fatal=True)
+
+    def _wakeup(self):
+        self.loop.call_later(0.1, self._wakeup)
+
+    def add_site(self, site: dict):
         """
         Add a site after initialization.
-        :param site: dict containing 'uris' (list of hosts), and 'root' (document root)
+        :param site: the same dict as in the configuration
         """
-        self._sites.append(site)
-
-    def add_handler(self, extension: str, mime_type: str, handler: Handler):
-        """
-        Add a file handler after initialization.
-        :param extension: the file extension (e.g. 'php')
-        :param mime_type: the MIME type to serve with this file
-        :param handler: a Handler subclass (see Handler docs)
-        """
-        extension = extension.lower()
-        if extension in self._handlers.keys():
-            raise Exception('add_handler failed: handler already exists for .' + extension)
-        self._mime_types[extension] = mime_type
-        self._handlers[extension] = handler
+        config = self._config
+        config['sites'].append(site)
+        self.test_config(config, 'sites')
+        self._config = config
 
     def get_site(self, host: str):
         """
-        Get the site object for any given host.
-        :param host: the hostname to look up
+        Get a site by its hostname.
+        :param host: the hostname to look for
         :return: dict or None
         """
-        for site in self._sites:
+        for site in self._config['sites']:
             if host.lower() in site['uris']:
                 return site
         return None
+
+    def set_handler(self, extension: str, mime_type: str, handler: Handler):
+        """
+        Add a file handler after initialization.
+        :param extension: the file extension (e.g. 'py')
+        :param mime_type: the MIME type to serve with this file
+        :param handler: a Handler subclass (see Handler docs)
+        """
+        config = self._config
+        extension = extension.lower()
+        if extension in self._handlers:
+            raise ConfigError('a handler already exists for filetype: ' + extension)
+        self.set_mime_type(mime_type, extension)
+        self._handlers[extension] = handler
+        self.test_config(config, 'handlers')
+        self._config = config
+
+    def get_handler(self, extension: str):
+        """
+        Get a file handler by the extension.
+        :param extension: the file extension (e.g. 'py')
+        :return: Handler object or None
+        """
+        if extension in self._handlers:
+            return self._handlers[extension]
+        return None
+
+    def set_mime_type(self, mime_type, *extensions):
+        """
+        Set the MIME type of a file extension.
+        :param mime_type: MIME type (e.g. 'application/html'
+        :param extensions: File extensions (e.g. 'py', 'pyc', ...)
+        """
+        extensions = list(extensions)
+        config = self._config
+        for type, exts in config['mime_types'].items():
+            for ext in extensions:
+                if ext.lower() in exts:
+                    config['mime_types'][mime_type].remove(ext)
+        if mime_type in config['mime_types']:
+            config['mime_types'][mime_type] += extensions
+        else:
+            config['mime_types'][mime_type] = extensions
+        self.test_config(config, 'mime_types')
+        self._config = config
+
+    def get_mime_type(self, extension):
+        """
+        Get the MIME type for any file extension.
+        :param extension: the file extension
+        :return: MIME type or None if one is not set
+        """
+        for type, exts in self._config['mime_types'].items():
+            if extension.lower() in exts:
+                return type
+        return None
+
+    def set_path(self, path: str, options: dict=None):
+        """
+        Set the options for a path. If options is None, all options will be removed.
+        Otherwise, any options not provided will stay as-is in the configuration.
+        :param path: URI path
+        :param options: the options to set
+        :return:
+        """
+        config = self._config
+        updated = False
+        for spath, opts in config['paths'].items():
+            if spath == path:
+                if not options:
+                    del config['paths'][path]
+                else:
+                    for name, value in options.items():
+                        config['paths'][path][name] = value
+                updated = True
+        if not updated:
+            config['paths'][path] = options
+        self.test_config(config, 'paths')
+        self._config = config
 
     def get_path(self, path: str, site: dict=None):
         """
@@ -590,9 +763,9 @@ class MiniPyP:
         options = {
             'proxy': None
         }
-        for cpath in sorted(self._paths, key=len):
+        for cpath in sorted(self._config['paths'], key=len):
             cpath = str(cpath)
-            opts = self._paths[cpath]
+            opts = self._config['paths'][cpath]
             if path.startswith(cpath) or re.match(cpath, path):
                 if 'proxy' in opts:
                     options['proxy'] = opts['proxy']
@@ -605,6 +778,26 @@ class MiniPyP:
                         options['proxy'] = opts['proxy']
         return options
 
+    def set_directory(self, dir: str, options: dict=None):
+        """
+        Set the options for a directory. If options is None, all options will be removed.
+        Otherwise, any options not provided will stay as-is in the configuration.
+        :param dir: OS-specific directory path
+        :param options: the options to set
+        """
+        config = self._config
+        for sdir, opts in config['paths'].items():
+            if sdir == dir:
+                if not options:
+                    del config['directories'][dir]
+                else:
+                    for name, value in options.items():
+                        config['directories'][dir][name] = value
+                return
+        config['directories'][dir] = options
+        self.test_config(config, 'directories')
+        self._config = config
+
     def get_directory(self, dir: str):
         """
         Get the options for any given directory, defaulting if no options were set.
@@ -616,11 +809,11 @@ class MiniPyP:
             'static': False,
             'indexing': True,
             'dont_handle': [],
-            'error_pages': self._error_pages
+            'error_pages': self._config['error_pages']
         }
-        for path in sorted(self._directories, key=len):
+        for path in sorted(self._config['directories'], key=len):
             path = str(path)
-            opts = self._directories[path]
+            opts = self._config['directories'][path]
             if dir.startswith(path) or re.match(path, dir):
                 if 'public' in opts:
                     options['public'] = opts['public']
@@ -634,3 +827,165 @@ class MiniPyP:
                     for status, page in opts['error_pages'].items():
                         options['error_pages'][status] = page
         return options
+
+    def set_error_page(self, code: int, page: dict):
+        """
+        Set the error page for any HTTP code.
+        Page should include either `html` for plain HTML or `file` to render a file instead.
+        :param code: HTTP status
+        :param page: dict
+        """
+        config = self._config
+        config['error_pages'][code] = page
+        self.test_config(config, 'error_pages')
+        self._config = config
+
+    def get_error_page(self, code: int, directory: str=None):
+        """
+        Get the error page for any HTTP code.
+        :param code: HTTP status
+        :param directory: OS-specific path to get custom error pages for
+        :return: dict
+        """
+        pages = self.get_directory(directory)['error_pages'] if directory else self._config['error_pages']
+        if code in pages:
+            return pages
+        return None
+
+    def write_config(self, to: str=None):
+        """
+        Writes the current configuration to the config file.
+        If `to` is None (default), the config will be written to the real config file or a ConfigError will be thrown.
+        If `to` is False, nothing will be written.
+        :param to: the file to write to
+        :return: YAML-encoded configuration
+        """
+        if not self._config_file:
+            raise ConfigError('no config file to write to')
+        data = yaml.dump(self._config)
+        if to is None:
+            to = self._config_file
+        if to:
+            try:
+                with open(self._config_file, 'r') as conf:
+                    conf.write(data)
+            except IOError as e:
+                raise ConfigError('failed to write to config file: ' + str(e))
+        return data
+
+    def reload_config(self):
+        """
+        Reloads the configuration file from disk.
+        """
+        if not self._config_file:
+            raise ConfigError('no config file to reload')
+        try:
+            with open(self._config_file) as conf:
+                config = yaml.load(conf)
+                self.test_config(config)
+                self._config = config
+        except (IOError, yaml.YAMLError) as e:
+            _except('Failed to read config file: ' + str(e), fatal=True)
+
+    @staticmethod
+    def test_config(config: dict, part: str=None):
+        """
+        Test the provided configuration, or a part of it.
+        :param config: dict of config
+        :param part: part of the config to test (or None)
+        :raise: ConfigError if invalid
+        """
+        if not part:
+            if type(config) != dict:
+                raise ConfigError('config must be a dict')
+            if 'root' not in config:
+                raise ConfigError('no `Root` provided')
+            if not os.path.isdir(config['root']):
+                raise ConfigError('`Root` directory not found')
+            if 'host' in config:
+                try:
+                    socket.gethostbyname(config['host'])
+                except socket.gaierror as e:
+                    raise ConfigError('`Host` is an invalid hostname: ' + str(e))
+            if 'port' in config and (type(config['port']) != int or not 0 < config['port'] < 65536):
+                raise ConfigError('`Port` must be a valid port number')
+            if 'timeout' in config and type(config['timeout']) != int:
+                raise ConfigError('`Timeout` must be an integer of seconds')
+            if 'log_level' in config and \
+                    config['log_level'].upper() not in logging._nameToLevel.keys():
+                raise ConfigError('`Log Level` must be in: ' + ', '.join(logging._nameToLevel.keys()))
+            if 'log_limit' in config and type(config['log_limit']) != int:
+                raise ConfigError('`Log Limit` must be an integer of megabytes')
+            if not os.path.isdir(config['root']):
+                raise ConfigError('directory `Root` could not be found')
+        if 'sites' in config and (not part or part == 'sites'):
+            if type(config['sites']) != list:
+                raise ConfigError('`Sites` must be a list')
+            for site in config['sites']:
+                if type(site['uris']) != list:
+                    raise ConfigError('site `URIs` must be a list')
+                if 'root' in site and not os.path.isdir(site['root']):
+                    raise ConfigError('`Root` directory for site ' + site['URIs'] + ' could not be found')
+        if 'mime_types' in config and (not part or part == 'mime_types'):
+            if type(config['mime_types']) != dict:
+                raise ConfigError('`MIME Types` must be a dict[type, extensions]')
+            for mime, exts in config['mime_types'].items():
+                if not re.match(r'^[-\w]+/[-\w+.]+$', mime):
+                    raise ConfigError('`MIME Types` key must be a valid MIME type')
+                if type(exts) != list:
+                    raise ConfigError('`MIME Types` value must be a list of extensions')
+                for ext in exts:
+                    if not re.match(r'^\w+$', ext):
+                        raise ConfigError('`MIME Types` extensions should only contain letters (e.g. ["py", "pyc"])')
+        if 'error_pages' in config and (not part or part == 'error_pages'):
+            if type(config['error_pages']) != dict:
+                raise ConfigError('`Error Pages` must be a dict[code, page]')
+            for code, page in config['error_pages'].items():
+                if type(code) != int or not (300 <= code < 600):
+                    raise ConfigError('`Error Pages` key must be a valid HTTP status code')
+                if 'html' not in page and 'file' not in page:
+                    raise ConfigError('`Error Pages` value must contain a `File` or `HTML`')
+                if 'file' in page and not os.path.isfile(page['file']):
+                    log.warning('File for error ' + str(code) + ' does not exist')
+        if 'directories' in config and (not part or part == 'directories'):
+            if type(config['directories']) != dict:
+                raise ConfigError('`Directories` must be a dict[path, options]')
+            for path, opts in config['directories']:
+                if not os.path.exists(path):
+                    log.warning('Directory in config does not exist: ' + path)
+                if 'public' in opts and type(opts['public']) != bool:
+                    raise ConfigError('`Public` must be True or False in directory: ' + path)
+                if 'static' in opts and type(opts['static']) != bool:
+                    raise ConfigError('`Static` must be True or False in directory: ' + path)
+                if 'indexing' in opts and type(opts['indexing']) != bool:
+                    raise ConfigError('`Indexing` must be True or False in directory: ' + path)
+                if 'dont_handle' in opts and type(opts['dont_handle']) != bool:
+                    raise ConfigError('`Don\'t Handle` must be True or False in directory: ' + path)
+                if 'error_pages' in opts and type(opts['error_pages']) != dict:
+                    raise ConfigError('`Error Pages` must be a dict[code, page] in directory: ' + path)
+                for code, page in opts['error_pages'].items():
+                    if type(code) != int or not (300 <= code < 600):
+                        raise ConfigError('`Error Pages` key must be a valid HTTP status code in directory' + path)
+                    if 'html' not in page and 'file' not in page:
+                        raise ConfigError('`Error Pages` value must contain a `File` or `HTML` in directory: ' + path)
+                    if 'file' in page and not os.path.isfile(page['file']):
+                        log.warning('File for error ' + str(code) + ' does not exist in directory: ' + path)
+        if 'paths' in config and (not part or part == 'paths'):
+            if type(config['paths']) != dict:
+                raise ConfigError('`Paths` must be a dict[path, options]')
+            for path, opts in config['paths']:
+                if 'proxy' in opts:
+                    try:
+                        uri = urlparse(opts['proxy'])
+                        if not all([uri.scheme, uri.netloc]):
+                            raise Exception()
+                    except Exception as e:
+                        raise ConfigError('`Proxy` must be a valid URL in path: ' + path + ' - ' + str(e))
+        if 'handlers' in config and (not part or part == 'handlers'):
+            if type(config['handlers']) != dict:
+                raise ConfigError('`Handlers` must be a dict[extension, Handler]')
+            for ext, handler in config['handlers'].items():
+                if not re.match(r'\w+', ext):
+                    raise ConfigError('`Handlers` key must be a valid file extension without the dot')
+                if not isinstance(handler, Handler):
+                    raise ConfigError('`Handlers` value must be an object of type minipyp.Handler')

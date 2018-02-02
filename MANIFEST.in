@@ -1,3 +1,7 @@
+include HISTORY.rst
+include LICENSE.txt
 include README.rst
-include MANIFEST.rst
-include tests/*.py
+recursive-include tests *
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-include docs *.rst conf.py Makefile make.bat
