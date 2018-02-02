@@ -970,15 +970,16 @@ class MiniPyP:
                     raise ConfigError('`Indexing` must be True or False in directory: ' + path)
                 if 'dont_handle' in opts and type(opts['dont_handle']) != bool:
                     raise ConfigError('`Don\'t Handle` must be True or False in directory: ' + path)
-                if 'error_pages' in opts and type(opts['error_pages']) != dict:
-                    raise ConfigError('`Error Pages` must be a dict[code, page] in directory: ' + path)
-                for code, page in opts['error_pages'].items():
-                    if type(code) != int or not (300 <= code < 600):
-                        raise ConfigError('`Error Pages` key must be a valid HTTP status code in directory' + path)
-                    if 'html' not in page and 'file' not in page:
-                        raise ConfigError('`Error Pages` value must contain a `File` or `HTML` in directory: ' + path)
-                    if 'file' in page and not os.path.isfile(page['file']):
-                        log.warning('File for error ' + str(code) + ' does not exist in directory: ' + path)
+                if 'error_pages' in opts:
+                    if type(opts['error_pages']) != dict:
+                        raise ConfigError('`Error Pages` must be a dict[code, page] in directory: ' + path)
+                    for code, page in opts['error_pages'].items():
+                        if type(code) != int or not (300 <= code < 600):
+                            raise ConfigError('`Error Pages` key must be a valid HTTP status code in directory' + path)
+                        if 'html' not in page and 'file' not in page:
+                            raise ConfigError('`Error Pages` value must contain a `File` or `HTML` in directory: ' + path)
+                        if 'file' in page and not os.path.isfile(page['file']):
+                            log.warning('File for error ' + str(code) + ' does not exist in directory: ' + path)
         if 'paths' in config and (not part or part == 'paths'):
             if type(config['paths']) != dict:
                 raise ConfigError('`Paths` must be a dict[path, options]')
