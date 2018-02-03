@@ -21,7 +21,7 @@ def start(args, config):
         sys.exit(1)
     else:
         pid = get_pid()
-        if pid:
+        if pid is not None and pid != -1:
             print('minipyp: error: server is already running')
             sys.exit(1)
         try:
@@ -64,7 +64,7 @@ def stop(args):
         print('minipyp: error: daemons are not supported on Windows')
         sys.exit(1)
     pid = get_pid()
-    if not pid:
+    if pid is None or pid == -1:
         print('minipyp: error: server is ' + ('stopped' if pid is None else 'dead'))
         if os.path.exists('/var/run/minipyp.pid'):
             os.remove('/var/run/minipyp.pid')
@@ -96,7 +96,7 @@ def reload(args):
         print('minipyp: error: daemons are not supported on Windows')
         sys.exit(1)
     pid = get_pid()
-    if not pid:
+    if pid is None or pid == -1:
         print('minipyp: error: server is ' + ('stopped' if pid is None else 'dead'))
         sys.exit(1)
     if hasattr(signal, 'SIGHUP'):
@@ -119,12 +119,12 @@ def status(args):
         print('minipyp: error: daemons are not supported on Windows, please use --attached (-a)')
         sys.exit(1)
     pid = get_pid()
-    if pid:
-        print('minipyp: running with pid ' + str(pid))
-    elif pid is None:
+    if pid is None:
         print('minipyp: stopped')
-    else:
+    elif pid == -1:
         print('minipyp: dead')
+    else:
+        print('minipyp: running with pid ' + str(pid))
 
 
 def get_pid():
