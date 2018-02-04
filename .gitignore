@@ -10,6 +10,7 @@ eggs
 *.egg-info
 *.egg
 *.py[co]
+.cache
 
 # Documentation
 docs/_build

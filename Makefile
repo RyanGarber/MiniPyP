@@ -18,6 +18,7 @@ clean:
 	rm -rf *.pyo
 	rm -rf *~
 	rm -rf __pycache__
+	rm -rf .cache
 
 build-docs:
 	sphinx-build docs docs/_build
