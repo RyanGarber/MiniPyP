@@ -1,8 +1,30 @@
-from os import path
+from os import path, name
+from subprocess import call
+from traceback import print_exc
 
 from setuptools import setup, find_packages
+from setuptools.command.install import install
 
 here = path.abspath(path.dirname(__file__))
+
+
+class SystemD(install):
+    def run(self):
+        super().run()
+        try:
+            if name == 'posix':
+                print('Registering service with systemd...')
+                with open(path.join(here, 'minipyp', 'minipyp.service')) as stream:
+                    executable = path.join(self.install_scripts, 'minipyp')
+                    service = stream.read().format(executable)
+                    with open(path.join('lib', 'systemd', 'system', 'minipyp.service'), 'w') as target:
+                        target.write(service)
+                call(['systemd', 'enable', 'minipyp'])
+        except:
+            print('Failed to register service. Printing traceback and continuing install...')
+            print_exc()
+
+
 with open(path.join(here, 'README.rst')) as file:
     readme = file.read()
 with open(path.join(here, 'HISTORY.rst')) as file:
@@ -41,5 +63,8 @@ setup(
         'console_scripts': [
             'minipyp=minipyp:main'
         ]
+    },
+    cmdclass={
+        'install': SystemD
     }
 )

@@ -1,0 +1,15 @@
+[Unit]
+Description=A more traditional web server in Python
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/minipyp.pid
+ExecStart={0} start
+ExecStop={0} stop
+ExecReload={0} reload
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target
+Alias=minipyp
