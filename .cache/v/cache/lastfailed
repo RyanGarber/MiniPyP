@@ -1,4 +1,0 @@
-{
-  "tests/test_minipyp.py::TestMiniPyP::test_server": true,
-  "tests/test_minipyp.py::TestMiniPyP::test_start": true
-}
