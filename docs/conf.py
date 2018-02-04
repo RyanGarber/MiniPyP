@@ -23,7 +23,7 @@ from os import pardir, path
 module = path.abspath(path.join(path.dirname(__file__), pardir))
 sys.path.insert(0, module)
 there = {}
-with open(path.join(module, 'minipyp', 'minipyp.py'), encoding='utf-8') as file:
+with open(path.join(module, 'minipyp', 'minipyp.py')) as file:
     exec(file.read(), there)
     if '__version__' not in there.keys():
         raise Exception('Failed to fetch version from source')

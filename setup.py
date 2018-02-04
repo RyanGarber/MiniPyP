@@ -3,12 +3,12 @@ from os import path
 from setuptools import setup, find_packages
 
 here = path.abspath(path.dirname(__file__))
-with open(path.join(here, 'README.rst'), encoding='utf-8') as file:
+with open(path.join(here, 'README.rst')) as file:
     readme = file.read()
-with open(path.join(here, 'HISTORY.rst'), encoding='utf-8') as file:
+with open(path.join(here, 'HISTORY.rst')) as file:
     readme += '\n\n' + file.read()
 there = {}
-with open(path.join(here, 'minipyp', 'minipyp.py'), encoding='utf-8') as file:
+with open(path.join(here, 'minipyp', 'minipyp.py')) as file:
     exec(file.read(), there)
     if '__version__' not in there.keys():
         raise Exception('Failed to fetch version from source')
