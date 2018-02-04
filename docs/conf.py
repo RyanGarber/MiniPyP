@@ -18,9 +18,9 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import sys
-from os import pardir, path
+from os import path
 
-module = path.abspath(path.join(path.dirname(__file__), pardir))
+module = path.abspath('.')
 sys.path.insert(0, module)
 
 # -- General configuration ------------------------------------------------

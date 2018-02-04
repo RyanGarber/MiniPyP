@@ -62,22 +62,25 @@ def _except(error: str, extra: dict=None, fatal: bool=False):
     raise Exception(error)
 
 
-def _translate(config: dict):
-    new = {}
-    for key, value in config.items():
-        key = key.lower().replace(' ', '_').replace('\'', '')
-        if type(value) == dict:
-            new[key] = _translate(value)
-        elif type(value) == list:
-            items = value[:]
-            new[key] = []
-            for item in items:
-                if type(item) == dict:
-                    item = _translate(item)
-                new[key].append(item)
-        else:
+def _translate(item, keep_keys: list, keep_values: list, parent: str=None):
+    def fix(string: str):
+        return string.lower().replace(' ', '_').replace('\'', '')
+    if type(item) == dict:
+        new = {}
+        for key, value in item.items():
+            new_key = _translate(key, keep_keys, keep_values)
+            if parent not in keep_keys:
+                key = new_key
+            if new_key not in keep_values:
+                value = _translate(value, keep_keys, keep_values, parent=new_key)
             new[key] = value
-    return new
+        item = new
+    elif type(item) in [list, tuple]:
+        for i in range(len(item)):
+            item[i] = _translate(item[i], keep_keys, keep_values)
+    elif type(item) == str:
+        item = fix(item)
+    return item
 
 
 def _capitalize(string: str, reset: bool=False):
@@ -393,7 +396,7 @@ class Server(asyncio.Protocol):
 
     def _render(self, request: Request, file: str, opts=None):
         ext = file.split('.')[-1]
-        handle = not opts or ext not in opts['dont_handle']
+        handle = not opts or ext.lower() not in opts['dont_handle']
         mime = self._minipyp.get_mime_type(ext) or 'text/plain'
         request.set_header('Content-Type', mime if handle else 'text/plain')
         if handle:
@@ -661,7 +664,9 @@ class MiniPyP:
             try:
                 with open(config) as conf:
                     self._config_file = config
-                    config = _translate(yaml.load(conf))
+                    config = _translate(yaml.load(conf),
+                                        keep_keys=['directories', 'paths'],
+                                        keep_values=['file', 'html', 'root', 'uris', 'proxy'])
             except (IOError, yaml.YAMLError) as e:
                 _except('Failed to read config file: ' + str(e), fatal=True)
         elif type(config) == dict:
