@@ -1,5 +1,7 @@
 all: install
 
+clean-all: clean clean-docs
+
 install:
 	python setup.py install
 
@@ -16,3 +18,9 @@ clean:
 	rm -rf *.pyo
 	rm -rf *~
 	rm -rf __pycache__
+
+build-docs:
+	sphinx-build docs docs/_build
+
+clean-docs:
+	rm -rf docs/_build

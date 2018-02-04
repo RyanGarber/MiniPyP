@@ -17,11 +17,11 @@ setup(
     version=there['__version__'],
     description='A more traditional web server',
     long_description=readme,
-    url='https://github.com/RyanGarber/minipyp',
+    url='https://minipyp.readthedocs.io/en/latest/',
     author='Ryan Garber',
     author_email='ryanmichaelgarber@gmail.com',
     classifiers=[
-        'Development Status :: 1 - Planning',
+        'Development Status :: 3 - Alpha',
         'License :: OSI Approved :: MIT License',
         'Topic :: Internet :: WWW/HTTP :: HTTP Servers',
         'Natural Language :: English',
@@ -33,10 +33,9 @@ setup(
     ],
     keywords='http https web cgi fast-cgi fpm ssl tls socket proxy reverse',
     packages=find_packages(exclude=['docs', 'tests']),
-    download_url='https://github.com/RyanGarber/minipyp/archive/0.2.0.tar.gz',
+    download_url='https://github.com/RyanGarber/minipyp/archive/' + there['__version__'] + '.tar.gz',
     install_requires=['requests', 'PyYAML'],
     tests_require=['pytest'],
-    extras_require={'tests': ['unittest']},
     python_requires='>=3',
     entry_points={
         'console_scripts': [

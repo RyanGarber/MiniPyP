@@ -125,6 +125,8 @@ class PyHandler(Handler):
 
 
 class Request:
+    """Information about the client's request."""
+
     def __init__(self, minipyp, server, bare=None, full=None):
         self._status = None
         self._response_headers = {}
@@ -134,11 +136,11 @@ class Request:
             proto = full[0].split()
             if len(proto) != 3:
                 _except('Failed to parse initial request line', server.extra)
-            self.method = proto[0]
-            self.protocol = proto[2]
+            self.method = proto[0]  #: HTTP method (e.g. POST)
+            self.protocol = proto[2]  #: HTTP protocol version (e.g. HTTP/1.1)
             if self.protocol not in ['HTTP/1.0', 'HTTP/1.1']:
                 _except('Invalid protocol `' + self.protocol + '`', server.extra)
-            self.headers = {}
+            self.headers = {}  #: Request headers
             try:
                 for line in full[1:]:
                     if line == '':
@@ -148,20 +150,21 @@ class Request:
             except:
                 _except('Headers seem to be malformed', server.extra)
             uri = urlparse(proto[1])
-            self.scheme = uri.scheme or 'http'  # TODO SSL
+            self.scheme = uri.scheme or 'http'  #: Transfer scheme (e.g. https)
             try:
-                self.host = uri.netloc or self.headers['Host']
+                self.host = uri.netloc or self.headers['Host']  #: Hostname requested (e.g. localhost)
             except:
                 _except('No host was provided in headers or request line', server.extra)
-            self.path = uri.path
-            self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')
-            self.query = parse_qs(uri.query, True)
+            self.path = uri.path  #: Path requested (e.g. /path/to/file.txt)
+            self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')  #: Path requested, including query
+            self.query_string = uri.query  #: Querystring (e.g. A=1&B=2)
+            self.query = parse_qs(uri.query, True)  #: Parsed querystring (i.e. GET params)
             if '' in full:
-                self.body = '\n'.join(full[full.index('') + 1:])
-            self.post = parse_qs(self.body, True)
-            self.site = None
-            self.root = None
-            self.file = None
+                self.body = '\n'.join(full[full.index('') + 1:])  #: Request body
+            self.post = parse_qs(self.body, True)  #: Parsed request body (i.e. POST params)
+            self.site = minipyp.get_site(self.host)  #: Effective site config
+            self.root = self.site['root'] if self.site else minipyp._config['root']  #: Document root
+            self.file = os.path.join(self.root, *self.path.split('/'))  #: File requested
         elif bare:
             # Barebones Request object (for error handling)
             self.protocol = 'HTTP/1.0'
@@ -192,14 +195,25 @@ class Request:
                 self.host = self.headers['Host']
             if self.host:
                 self.site = minipyp.get_site(self.host)
-                self.file = self.site['root'] if self.site else minipyp._config['root']
+                self.root = self.site['root'] if self.site else minipyp._config['root']
                 if self.path:
-                    self.file += self.path
+                    self.file = os.path.join(self.root, *self.path.split('/'))
 
     def set_header(self, name: str, value: str):
-        self._response_headers[name] = value
+        """
+        Set a header in the response, capitalized Like-This.
+
+        :param name: header name, e.g. "X-My-Header"
+        :param value: header value, e.g. "My Value"
+        """
+        self._response_headers[_capitalize(name)] = value
 
     def set_status(self, status: str):
+        """
+        Set the response status.
+
+        :param status: full status string (e.g. "404 Not Found"
+        """
         self._status = status
 
 
@@ -211,13 +225,14 @@ class Server(asyncio.Protocol):
         self._keepalive = None
         self._timeout = minipyp._config['timeout']
         self._timing = None
+        self.peer = None
         self.extra = {
             'peer': 'unknown peer'
         }
 
     def connection_made(self, transport):
-        peer = transport.get_extra_info('peername')
-        self.extra['peer'] = peer[0] + ':' + str(peer[1])
+        self.peer = transport.get_extra_info('peername')
+        self.extra['peer'] = ':'.join(self.peer)
         self._transport = transport
         self._keepalive = True
         if self._timeout:
@@ -637,10 +652,10 @@ class MiniPyP:
         """
         Load new config values from the provided dict.
         If None, and a previously loaded file exists, it will be reloaded.
+
         :param config: the new config
         """
         if not config:
-            log.info('Configuration reloaded from disk')
             config = self._config_file
         if type(config) == str:
             try:
@@ -658,6 +673,7 @@ class MiniPyP:
             self._config = config
         except ConfigError as e:
             _except('Malformed config: ' + str(e), fatal=True)
+        log.info('Configuration reloaded from disk')
 
     def _wakeup(self):
         self.loop.call_later(0.1, self._wakeup)
@@ -665,6 +681,7 @@ class MiniPyP:
     def add_site(self, site: dict):
         """
         Add a site after initialization.
+
         :param site: the same dict as in the configuration
         """
         config = self._config
@@ -675,6 +692,7 @@ class MiniPyP:
     def get_site(self, host: str):
         """
         Get a site by its hostname.
+
         :param host: the hostname to look for
         :return: dict or None
         """
@@ -686,6 +704,7 @@ class MiniPyP:
     def set_handler(self, extension: str, mime_type: str, handler: Handler):
         """
         Add a file handler after initialization.
+
         :param extension: the file extension (e.g. 'py')
         :param mime_type: the MIME type to serve with this file
         :param handler: a Handler subclass (see Handler docs)
@@ -702,6 +721,7 @@ class MiniPyP:
     def get_handler(self, extension: str):
         """
         Get a file handler by the extension.
+
         :param extension: the file extension (e.g. 'py')
         :return: Handler object or None
         """
@@ -712,6 +732,7 @@ class MiniPyP:
     def set_mime_type(self, mime_type, *extensions):
         """
         Set the MIME type of a file extension.
+
         :param mime_type: MIME type (e.g. 'application/html'
         :param extensions: File extensions (e.g. 'py', 'pyc', ...)
         """
@@ -731,6 +752,7 @@ class MiniPyP:
     def get_mime_type(self, extension):
         """
         Get the MIME type for any file extension.
+
         :param extension: the file extension
         :return: MIME type or None if one is not set
         """
@@ -743,9 +765,9 @@ class MiniPyP:
         """
         Set the options for a path. If options is None, all options will be removed.
         Otherwise, any options not provided will stay as-is in the configuration.
+
         :param path: URI path
         :param options: the options to set
-        :return:
         """
         config = self._config
         updated = False
@@ -766,6 +788,7 @@ class MiniPyP:
         """
         Get the options for any given path, defaulting if no options were set.
         If a site is given, it will be applied after any global options for the path.
+
         :param path: URI (e.g. '/mypath')
         :param site: site object (see MiniPyP.get_site)
         :return: dict
@@ -792,6 +815,7 @@ class MiniPyP:
         """
         Set the options for a directory. If options is None, all options will be removed.
         Otherwise, any options not provided will stay as-is in the configuration.
+
         :param dir: OS-specific directory path
         :param options: the options to set
         """
@@ -811,6 +835,7 @@ class MiniPyP:
     def get_directory(self, dir: str):
         """
         Get the options for any given directory, defaulting if no options were set.
+
         :param dir: OS-specific directory path
         :return: dict
         """
@@ -842,6 +867,7 @@ class MiniPyP:
         """
         Set the error page for any HTTP code.
         Page should include either `html` for plain HTML or `file` to render a file instead.
+
         :param code: HTTP status
         :param page: dict
         """
@@ -853,6 +879,7 @@ class MiniPyP:
     def get_error_page(self, code: int, directory: str=None):
         """
         Get the error page for any HTTP code.
+
         :param code: HTTP status
         :param directory: OS-specific path to get custom error pages for
         :return: dict
@@ -867,6 +894,7 @@ class MiniPyP:
         Writes the current configuration to the config file.
         If `to` is None (default), the config will be written to the real config file or a ConfigError will be thrown.
         If `to` is False, nothing will be written.
+
         :param to: the file to write to
         :return: YAML-encoded configuration
         """
@@ -884,9 +912,7 @@ class MiniPyP:
         return data
 
     def reload_config(self):
-        """
-        Reloads the configuration file from disk.
-        """
+        """Reloads the configuration file from disk."""
         if not self._config_file:
             raise ConfigError('no config file to reload')
         try:
@@ -901,6 +927,7 @@ class MiniPyP:
     def test_config(config: dict, part: str=None):
         """
         Test the provided configuration, or a part of it.
+
         :param config: dict of config
         :param part: part of the config to test (or None)
         :raise: ConfigError if invalid

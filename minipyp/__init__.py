@@ -8,7 +8,7 @@ import sys
 from time import sleep
 from traceback import print_exc
 
-from minipyp.minipyp import MiniPyP
+from minipyp.minipyp import MiniPyP, Request, Server, Handler
 
 level = logging.INFO
 

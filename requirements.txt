@@ -1,3 +1,4 @@
 pytest
 PyYAML
 requests
+sphinx_rtd_theme

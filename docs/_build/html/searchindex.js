@@ -1,1 +1,0 @@
-Search.setIndex({docnames:["index"],envversion:53,filenames:["index.rst"],objects:{},objnames:{},objtypes:{},terms:{adapt:0,develop:0,document:0,index:0,modul:0,nice:0,page:0,progress:0,search:0,should:0,thi:0,throughout:0,work:0},titles:["Welcome to MiniPyP"],titleterms:{indic:0,minipyp:0,tabl:0,welcom:0}})

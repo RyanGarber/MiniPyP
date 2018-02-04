@@ -25,40 +25,35 @@ First, install MiniPyP via pip.
 
 .. code-block:: bash
 
-  pip install python
+  pip install minipyp
 
-Now let's start a server on ``*:80``. The default document root is ``/var/www/html``.
-
-.. code-block:: python
-
-  from minipyp import MiniPyP
-
-  MiniPyP().start()
-
-Some more basic options include sites (aka virtual hosts) and directory options.
+To start a server within a Python program, specify a config like so (you may alternatively give a file location as the ``config``):
 
 .. code-block:: python
 
   from minipyp import MiniPyP
 
-  sites = [
-      {
-          'uris': ['mysite.com', 'www.mysite.com']
-          'root': '/var/www/mysite'
-      }
-  ]
-
-  directories = {
-      '/': {
-          'public': False
-      }
-      '/var/www': {
-          'public': True,
-          'indexing': False
+  config = {
+      'host': '0.0.0.0',
+      'port': 80,
+      'root': '/var/www/html',
+      'timeout': 15,
+      'error_pages': {
+          404: {
+              'html': '<p>The file <code>{uri}</code> could not be found.</p>'
+          }
       }
   }
 
-  MiniPyP(root='/var/www/default', sites=sites, directories=directories).start()
+  MiniPyP(config=config).start()
+
+
+You may also start a server via the command line. Unless specified, the config will be created and loaded from ``/etc/minipyp/minipyp.conf`` on Mac/Linux and ``%APPDATA%\MiniPyP\minipyp.conf`` on Windows.
+
+.. code-block:: bash
+
+  minipyp start [-c CONFIG]
+
 
 Creating a page
 ===============
@@ -67,7 +62,10 @@ To create a page (e.g. 'https://mysite.com/test'), create a file called ``test.p
 
 .. code-block:: python
 
-  def render(minipyp, request):
+  def render(server, request):
       return '<p>You requested the page <code>' + request.uri + '</code>.</p>'
 
-You should now understand basic use of MiniPyP. Visit the documentation to learn all of your options.
+
+Learn more
+==========
+See the full documentation at https://minipyp.readthedocs.io
