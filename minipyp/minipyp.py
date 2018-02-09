@@ -19,6 +19,27 @@ import requests
 import yaml
 
 
+class CIDict(dict):
+    def __init__(self, *args, **kwargs):
+        if len(args) and type(args[0]) == dict:
+            for key, value in args[0].items():
+                if key[-2:] != '[]' and len(value) == 1:
+                    args[0][key] = value[0]
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, key):
+        for k, v in self.items():
+            if key.lower() == k.lower():
+                return v
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        try:
+            return self.__getitem__(key)
+        except KeyError:
+            return default
+
+
 class MiniFormatter(logging.Formatter):
     def __init__(self):
         super().__init__(fmt='[%(asctime)s] %(levelname)s: %(message)s%(peer)s', datefmt='%m-%d-%Y %I:%M:%S %p')
@@ -103,6 +124,8 @@ class Handler:
 class PyHandler(Handler):
     def handle(self, minipyp, request):
         cwd = os.getcwd()
+        modules = sys.modules
+        path = sys.path
         cwd_temp = os.path.dirname(request.file)
         os.chdir(cwd_temp)
         if cwd_temp not in sys.path:
@@ -112,7 +135,8 @@ class PyHandler(Handler):
         spec.loader.exec_module(mod)
         result = mod.render(minipyp, request)
         os.chdir(cwd)
-        sys.path.remove(cwd_temp)
+        sys.modules = modules
+        sys.path = path
         if result is None:
             return b''
         elif type(result) != bytes:
@@ -143,13 +167,13 @@ class Request:
             self.protocol = proto[2]  #: HTTP protocol version (e.g. HTTP/1.1)
             if self.protocol not in ['HTTP/1.0', 'HTTP/1.1']:
                 _except('Invalid protocol `' + self.protocol + '`', server.extra)
-            self.headers = {}  #: Request headers
+            self.headers = CIDict()  #: Request headers
             try:
                 for line in full[1:]:
                     if line == '':
                         break
                     key, value = line.split(': ', 1)
-                    self.headers[_capitalize(key)] = value
+                    self.headers[key] = value
             except:
                 _except('Headers seem to be malformed', server.extra)
             uri = urlparse(proto[1])
@@ -161,10 +185,10 @@ class Request:
             self.path = uri.path  #: Path requested (e.g. /path/to/file.txt)
             self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')  #: Path requested, including query
             self.query_string = uri.query  #: Querystring (e.g. A=1&B=2)
-            self.query = parse_qs(uri.query, True)  #: Parsed querystring (i.e. GET params)
+            self.query = CIDict(parse_qs(uri.query, True))  #: Parsed querystring (i.e. GET params)
             if '' in full:
                 self.body = '\n'.join(full[full.index('') + 1:])  #: Request body
-            self.post = parse_qs(self.body, True)  #: Parsed request body (i.e. POST params)
+            self.post = CIDict(parse_qs(self.body, True))  #: Parsed request body (i.e. POST params)
             self.site = minipyp.get_site(self.host)  #: Effective site config
             self.root = self.site['root'] if self.site else minipyp._config['root']  #: Document root
             self.file = os.path.join(self.root, *self.path.split('/'))  #: File requested
@@ -235,7 +259,7 @@ class Server(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.peer = transport.get_extra_info('peername')
-        self.extra['peer'] = ':'.join(self.peer)
+        self.extra['peer'] = self.peer[0] + ':' + str(self.peer[1])
         self._transport = transport
         self._keepalive = True
         if self._timeout:
@@ -247,7 +271,7 @@ class Server(asyncio.Protocol):
             log.warning('Connection lost: ' + str(e), extra=self.extra)
 
     def data_received(self, data):
-        lines = list(map(lambda x: x.decode('utf-8'), data.split(b'\r\n')))
+        lines = data.decode('utf-8').split('\r\n')
         if len(lines):
             try:
                 request = Request(self._minipyp, self, full=lines)
@@ -286,6 +310,7 @@ class Server(asyncio.Protocol):
                         self._give_error(request, 502, traceback=format_exc())
                 else:
                     request.root = request.site['root'] if request.site else self._minipyp._config['root']
+
                     if request.protocol == 'HTTP/1.1':
                         self._keepalive = request.headers['Connection'] != 'close'
                     else:
@@ -416,7 +441,7 @@ class Server(asyncio.Protocol):
         request.set_header('Date', formatdate(usegmt=True))
         request.set_header('Server', 'MiniPyP/' + __version__)
         has_body = False
-        if data is not None and len(data) and (request.bare or request.method != 'HEAD'):
+        if data is not None and (request.bare or request.method != 'HEAD'):
             has_body = True
             if request._response_headers.get('Transfer-Encoding', '') != 'chunked':
                 data = gzip.compress(data)
@@ -678,7 +703,7 @@ class MiniPyP:
             self._config = config
         except ConfigError as e:
             _except('Malformed config: ' + str(e), fatal=True)
-        log.info('Configuration reloaded from disk')
+        log.debug('Configuration loaded from disk')
 
     def _wakeup(self):
         self.loop.call_later(0.1, self._wakeup)
@@ -921,6 +946,7 @@ class MiniPyP:
         if not self._config_file:
             raise ConfigError('no config file to reload')
         try:
+            log.info('Reloading configuration from disk')
             with open(self._config_file) as conf:
                 config = yaml.load(conf)
                 self.test_config(config)
