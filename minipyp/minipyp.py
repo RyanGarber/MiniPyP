@@ -260,7 +260,8 @@ class Server(asyncio.Protocol):
 
     def connection_made(self, transport):
         self.peer = transport.get_extra_info('peername')
-        self.extra['peer'] = self.peer[0] + ':' + str(self.peer[1])
+        if type(self.peer) in (list, tuple):
+            self.extra['peer'] = self.peer[0] + ':' + str(self.peer[1])
         self._transport = transport
         self._keepalive = True
         if self._timeout:
