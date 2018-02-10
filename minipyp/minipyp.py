@@ -547,10 +547,6 @@ class MiniPyP:
             log.addHandler(handler)
 
         # Set defaults
-        if 'host' not in self._config:
-            self._config['host'] = '0.0.0.0'
-        if 'port' not in self._config:
-            self._config['port'] = 80
         if 'timeout' not in self._config:
             self._config['timeout'] = 15
         if 'error_pages' not in self._config:
