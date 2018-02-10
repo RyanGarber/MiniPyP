@@ -3,6 +3,11 @@
 History
 =======
 
+0.2.1
+-----
+* Add SSL support
+* Add UNIX socket support
+
 0.2.0
 -----
 * Daemon mode

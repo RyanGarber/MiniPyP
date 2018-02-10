@@ -8,6 +8,7 @@ import os
 import re
 import signal
 import socket
+import ssl
 import sys
 import threading
 from email.utils import formatdate
@@ -655,7 +656,15 @@ class MiniPyP:
                 self.loop.add_signal_handler(getattr(signal, term), self.stop)
             if hasattr(signal, 'SIGHUP'):
                 self.loop.add_signal_handler(signal.SIGHUP, self.load_config)
-        self.coro = self.loop.create_server(lambda: Server(self), self._config['host'], self._config['port'])
+        context = None
+        if 'ssl_cert' in self._config:
+            context = ssl.create_default_context(cafile=self._config['ssl_cert'])
+        if 'host' in self._config:
+            self.coro = self.loop.create_server(lambda: Server(self), self._config['host'], self._config['port'],
+                                                ssl=context)
+        elif 'socket' in self._config:
+            self.coro = self.loop.create_unix_server(lambda: Server(self), self._config['socket'],
+                                                     ssl=context)
         self.loop.run_until_complete(self.coro)
         log.info('Listening on ' + self._config['host'] + ':' + str(self._config['port']) + '...')
         try:
@@ -971,12 +980,32 @@ class MiniPyP:
             if not os.path.isdir(config['root']):
                 raise ConfigError('`Root` directory not found')
             if 'host' in config:
-                try:
-                    socket.gethostbyname(config['host'])
-                except socket.gaierror as e:
-                    raise ConfigError('`Host` is an invalid hostname: ' + str(e))
-            if 'port' in config and (type(config['port']) != int or not 0 < config['port'] < 65536):
-                raise ConfigError('`Port` must be a valid port number')
+                if type(config['host']) == str:
+                    try:
+                        socket.gethostbyname(config['host'])
+                    except socket.gaierror as e:
+                        raise ConfigError('`Host` is an invalid hostname: ' + str(e))
+                elif type(config['host']) == list:
+                    try:
+                        for host in config['host']:
+                            socket.gethostbyname(host)
+                    except socket.gaierror as e:
+                        raise ConfigError('`Host` has an invalid hostname: ' + str(e))
+                else:
+                    raise ConfigError('`Host` must be a hostname or a list of hostnames')
+                if 'port' not in config:
+                    raise ConfigError('a `Port` must be specified')
+                elif type(config['port']) != int or not 0 < config['port'] < 65536:
+                    raise ConfigError('`Port` must be a valid port number')
+            if 'socket' in config:
+                if 'host' in config:
+                    raise ConfigError('Either a `Host` and `Port` or a `Socket` must be given, not both')
+                if os.name != 'posix':
+                    raise ConfigError('`Socket` cannot be used on non-UNIX platforms')
+                if type(config['socket']) != str or config['socket'][-5:] != '.sock':
+                    raise ConfigError('`Socket` must be a UNIX .sock file')
+            if 'host' not in config and 'socket' not in config:
+                raise ConfigError('Either a `Host` and `Port` or a `Socket` must be given')
             if 'timeout' in config and type(config['timeout']) != int:
                 raise ConfigError('`Timeout` must be an integer of seconds')
             if 'log_level' in config and \
@@ -984,6 +1013,9 @@ class MiniPyP:
                 raise ConfigError('`Log Level` must be in: ' + ', '.join(logging._nameToLevel.keys()))
             if 'log_limit' in config and type(config['log_limit']) != int:
                 raise ConfigError('`Log Limit` must be an integer of megabytes')
+            if 'ssl_cert' in config:
+                if not os.path.isfile(config['ssl_cert']):
+                    raise ConfigError('`SSL Cert` could not be read')
             if not os.path.isdir(config['root']):
                 raise ConfigError('directory `Root` could not be found')
         if 'sites' in config and (not part or part == 'sites'):
