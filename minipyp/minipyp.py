@@ -313,9 +313,9 @@ class Server(asyncio.Protocol):
                     request.root = request.site['root'] if request.site else self._minipyp._config['root']
 
                     if request.protocol == 'HTTP/1.1':
-                        self._keepalive = request.headers['Connection'] != 'close'
+                        self._keepalive = request.headers.get('Connection', 'close') != 'close'
                     else:
-                        self._keepalive = request.headers['Connection'] == 'Keep-Alive'
+                        self._keepalive = request.headers.get('Connection', '') == 'Keep-Alive'
                     match = re.match(r'timeout=(\d+)', request.headers.get('Keep-Alive', ''))
                     if match:
                         timeout = int(match.group(1))
