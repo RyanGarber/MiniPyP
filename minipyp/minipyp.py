@@ -662,8 +662,13 @@ class MiniPyP:
                                                 ssl=context)
         elif 'socket' in self._config:
             target = self._config['socket']
-            self.coro = self.loop.create_unix_server(lambda: Server(self), self._config['socket'],
-                                                     ssl=context)
+            if os.path.exists(target):
+                os.remove(target)
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(target)
+            sock.listen(1)
+            os.chmod(target, 0o666)
+            self.coro = self.loop.create_unix_server(lambda: Server(self), None, sock=sock, ssl=context)
         self.loop.run_until_complete(self.coro)
 
         log.info('Listening on ' + target + '...')
@@ -678,6 +683,8 @@ class MiniPyP:
     def stop(self):
         """Stop the server."""
         log.info('Shutting down...')
+        if 'socket' in self._config and os.path.exists(self._config['socket']):
+            os.remove(self._config['socket'])
         if self.coro:
             self.coro.close()
         if self.loop:
