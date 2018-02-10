@@ -655,14 +655,18 @@ class MiniPyP:
         context = None
         if 'ssl_cert' in self._config:
             context = ssl.create_default_context(cafile=self._config['ssl_cert'])
+        target = '[unknown target]'
         if 'host' in self._config:
+            target = self._config['host'] + ':' + str(self._config['port'])
             self.coro = self.loop.create_server(lambda: Server(self), self._config['host'], self._config['port'],
                                                 ssl=context)
         elif 'socket' in self._config:
+            target = self._config['socket']
             self.coro = self.loop.create_unix_server(lambda: Server(self), self._config['socket'],
                                                      ssl=context)
         self.loop.run_until_complete(self.coro)
-        log.info('Listening on ' + self._config['host'] + ':' + str(self._config['port']) + '...')
+
+        log.info('Listening on ' + target + '...')
         try:
             self.loop.run_forever()
         except asyncio.CancelledError:
