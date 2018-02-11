@@ -276,7 +276,7 @@ class Request:
 
 class Server(asyncio.Protocol):
     def __init__(self, minipyp):
-        self._minipyp = minipyp
+        self.minipyp = minipyp
         self._loop = asyncio.get_event_loop()
         self._transport = None
         self._keepalive = None
@@ -286,7 +286,6 @@ class Server(asyncio.Protocol):
         self.extra = {
             'peer': 'unknown peer'
         }
-        self.globals = {}
 
     def connection_made(self, transport):
         self.peer = transport.get_extra_info('peername')
@@ -306,10 +305,10 @@ class Server(asyncio.Protocol):
         lines = data.decode('utf-8').split('\r\n')
         if len(lines):
             try:
-                request = Request(self._minipyp, self, full=lines)
+                request = Request(self.minipyp, self, full=lines)
                 log.info(request.method + ' ' + request.path, extra=self.extra)
-                request.site = self._minipyp.get_site(request.host)
-                path_opts = self._minipyp.get_path(request.path, request.site)
+                request.site = self.minipyp.get_site(request.host)
+                path_opts = self.minipyp.get_path(request.path, request.site)
                 proxy = None
                 if path_opts['proxy']:
                     proxy_p = urlparse(path_opts['proxy'])
@@ -341,7 +340,7 @@ class Server(asyncio.Protocol):
                         print_exc()
                         self._give_error(request, 502, traceback=format_exc())
                 else:
-                    request.root = request.site['root'] if request.site else self._minipyp._config['root']
+                    request.root = request.site['root'] if request.site else self.minipyp._config['root']
 
                     if request.protocol == 'HTTP/1.1':
                         self._keepalive = request.headers.get('Connection', 'close') != 'close'
@@ -356,7 +355,7 @@ class Server(asyncio.Protocol):
                     path = [''] + path
                     file = None
                     full_ospath = os.path.join(request.root, *path)
-                    options = self._minipyp.get_directory(full_ospath)
+                    options = self.minipyp.get_directory(full_ospath)
                     if options['public']:
                         for i in range(len(path)):
                             ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
@@ -396,7 +395,7 @@ class Server(asyncio.Protocol):
                                     if not len(dirs):
                                         index += '            <small>(none)</small>\n'
                                     index += '        </ul>'
-                                    response = self._minipyp._index.format(request.path, index, __version__)
+                                    response = self.minipyp._index.format(request.path, index, __version__)
                                     self._respond(request, response.encode('utf-8'))
                                     file = False
                                     break
@@ -412,7 +411,7 @@ class Server(asyncio.Protocol):
                         self._give_error(request, 403)
             except:
                 print_exc()
-                self._give_error(Request(self._minipyp, self, bare=lines), 500, traceback=format_exc())
+                self._give_error(Request(self.minipyp, self, bare=lines), 500, traceback=format_exc())
         else:
             self._keepalive = False
         if not self._keepalive:
@@ -435,7 +434,7 @@ class Server(asyncio.Protocol):
             502: 'Bad Gateway'
         }[error]
         request.set_status(str(error) + ' ' + status)
-        page = self._minipyp.get_error_page(error, request.file)
+        page = self.minipyp.get_error_page(error, request.file)
         html = 'MiniPyP encountered a ' + str(error) + '. The custom error page is missing or invalid.'
         if 'file' in page:
             if os.path.isfile(page['file']):
@@ -454,12 +453,12 @@ class Server(asyncio.Protocol):
     def _render(self, request: Request, file: str, opts=None):
         ext = file.split('.')[-1]
         handle = not opts or ext.lower() not in opts['dont_handle']
-        mime = self._minipyp.get_mime_type(ext) or 'text/plain'
+        mime = self.minipyp.get_mime_type(ext) or 'text/plain'
         request.set_header('Content-Type', mime if handle else 'text/plain')
         if handle:
-            handler = self._minipyp.get_handler(ext)
+            handler = self.minipyp.get_handler(ext)
             if handler:
-                return handler.handle(self._minipyp, request)
+                return handler.handle(self.minipyp, request)
         request.set_header('Last-Modified', formatdate(timeval=os.path.getmtime(file), usegmt=True))
         with open(file, 'rb') as f:
             return f.read()
@@ -558,6 +557,7 @@ class MiniPyP:
         self._loop = None
         self._coro = None
         self._handlers = {}
+        self.globals = {}
 
         self.load_config(config)
 
