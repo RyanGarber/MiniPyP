@@ -286,6 +286,7 @@ class Server(asyncio.Protocol):
         self.extra = {
             'peer': 'unknown peer'
         }
+        self.globals = {}
 
     def connection_made(self, transport):
         self.peer = transport.get_extra_info('peername')
