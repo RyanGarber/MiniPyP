@@ -177,11 +177,11 @@ class Request:
                     key, value = line.split(': ', 1)
                     self.headers[key] = value
                     if key.lower() == 'cookie':
-                        cookies = CIDict()
-                        cookie = SimpleCookie()
-                        cookie.load(value)
-                        for key, morsel in cookie.items():
-                            cookies[key] = morsel.value
+                        self.cookies = CIDict()
+                        cookies = SimpleCookie()
+                        cookies.load(value)
+                        for key, morsel in cookies.items():
+                            self.cookies[key] = morsel.value
             except:
                 _except('Headers seem to be malformed', server.extra)
             uri = urlparse(proto[1])
