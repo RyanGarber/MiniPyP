@@ -170,6 +170,7 @@ class Request:
             if self.protocol not in ['HTTP/1.0', 'HTTP/1.1']:
                 _except('Invalid protocol `' + self.protocol + '`', server.extra)
             self.headers = CIDict()  #: Request headers
+            self.cookies = CIDict()
             try:
                 for line in full[1:]:
                     if line == '':
@@ -177,7 +178,6 @@ class Request:
                     key, value = line.split(': ', 1)
                     self.headers[key] = value
                     if key.lower() == 'cookie':
-                        self.cookies = CIDict()
                         cookies = SimpleCookie()
                         cookies.load(value)
                         for key, morsel in cookies.items():
