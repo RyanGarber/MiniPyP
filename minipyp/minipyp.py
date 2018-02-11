@@ -12,6 +12,7 @@ import ssl
 import sys
 import threading
 from email.utils import formatdate
+from http.cookies import SimpleCookie
 from logging.handlers import RotatingFileHandler
 from traceback import format_exc, print_exc
 from urllib.parse import urlparse, parse_qs
@@ -154,10 +155,10 @@ class PyHandler(Handler):
 
 class Request:
     """Information about the client's request."""
-
     def __init__(self, minipyp, server, bare=None, full=None):
         self._status = None
         self._response_headers = {}
+        self._response_cookies = []
         self.bare = bool(bare)
         if full:
             # Full Request object
@@ -175,6 +176,12 @@ class Request:
                         break
                     key, value = line.split(': ', 1)
                     self.headers[key] = value
+                    if key.lower() == 'cookie':
+                        cookies = CIDict()
+                        cookie = SimpleCookie()
+                        cookie.load(value)
+                        for key, morsel in cookie.items():
+                            cookies[key] = morsel.value
             except:
                 _except('Headers seem to be malformed', server.extra)
             uri = urlparse(proto[1])
@@ -243,6 +250,28 @@ class Request:
         :param status: full status string (e.g. "404 Not Found"
         """
         self._status = status
+
+    def set_cookie(self, name: str, value, **options):
+        """
+        Set a cookie.
+        :param name: the name of the cookie
+        :param value: the cookie's value
+        :param options: additional options, e.g. expires='Jan 1...', path='/'
+        """
+        flags = ''
+        for k, v in options.items():
+            flags += '; ' + k + '=' + v
+        self._response_cookies.append(name + '=' + value + flags)
+
+    def delete_cookie(self, name: str, **options):
+        """
+        Delete a cookie. Supply the same domain, path, etc. used when creating the cookie.
+        :param name: the name of the cookie
+        :param options: the cookie's options
+        """
+        if 'expires' in options:
+            raise Exception('the expires option should not be supplied when deleting a cookie')
+        self.set_cookie(name, '', expires='Sat, 17 Mar 2001 6:00:00 GMT', **options)
 
 
 class Server(asyncio.Protocol):
@@ -456,6 +485,8 @@ class Server(asyncio.Protocol):
                     request.set_header('Vary', 'Accept-Encoding')
         for key, value in request._response_headers.items():
             self._write((key + ': ' + value).encode('utf-8'))
+        for cookie in request._response_cookies:
+            self._write(('Set-Cookie: ' + cookie).encode('utf-8'))
         self._write(b'')
         if has_body:
             self._write(data)
