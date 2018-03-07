@@ -23,10 +23,12 @@ import yaml
 
 class CIDict(dict):
     def __init__(self, *args, **kwargs):
-        if len(args) and type(args[0]) == dict:
-            for key, value in args[0].items():
-                if key[-2:] != '[]' and len(value) == 1:
-                    args[0][key] = value[0]
+        if 'query' in kwargs:
+            del kwargs['query']
+            if len(args) and type(args[0]) == dict:
+                for key, value in args[0].items():
+                    if len(key) > 2 and key[-2:] != '[]' and len(value) == 1:
+                        args[0][key] = value[0]
         super().__init__(*args, **kwargs)
 
     def __getitem__(self, key):
@@ -193,10 +195,10 @@ class Request:
             self.path = uri.path  #: Path requested (e.g. /path/to/file.txt)
             self.uri = uri.path + (('?' + uri.query) if len(uri.query) else '')  #: Path requested, including query
             self.query_string = uri.query  #: Querystring (e.g. A=1&B=2)
-            self.query = CIDict(parse_qs(uri.query, True))  #: Parsed querystring (i.e. GET params)
+            self.query = CIDict(parse_qs(uri.query, True), query=True)  #: Parsed querystring (i.e. GET params)
             if '' in full:
                 self.body = '\n'.join(full[full.index('') + 1:])  #: Request body
-            self.post = CIDict(parse_qs(self.body, True))  #: Parsed request body (i.e. POST params)
+            self.post = CIDict(parse_qs(self.body, True), query=True)  #: Parsed request body (i.e. POST params)
             self.site = minipyp.get_site(self.host)  #: Effective site config
             self.root = self.site['root'] if self.site else minipyp._config['root']  #: Document root
             self.file = os.path.join(self.root, *self.path.split('/'))  #: File requested
@@ -356,6 +358,8 @@ class Server(asyncio.Protocol):
                     file = None
                     full_ospath = os.path.join(request.root, *path)
                     options = self.minipyp.get_directory(full_ospath)
+                    for key, value in options['headers'].items():
+                        request.set_header(key, value)
                     if options['public']:
                         for i in range(len(path)):
                             ospath = full_ospath if i == 0 else os.path.join(request.root, *path)
@@ -922,6 +926,7 @@ class MiniPyP:
             'public': True,
             'static': False,
             'indexing': True,
+            'headers': CIDict(),
             'dont_handle': [],
             'error_pages': self._config['error_pages']
         }
@@ -935,6 +940,12 @@ class MiniPyP:
                     options['static'] = opts['static']
                 if 'indexing' in opts:
                     options['indexing'] = opts['indexing']
+                if 'headers' in opts:
+                    if 'clear_headers' in opts and opts['clear_headers']:
+                        options['headers'] = CIDict(opts['headers'])
+                    else:
+                        for key, value in opts['headers'].items():
+                            options['headers'][key] = value
                 if 'dont_handle' in opts:
                     options['dont_handle'] = opts['dont_handle']
                 if 'error_pages' in opts:

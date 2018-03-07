@@ -63,6 +63,8 @@ Name           Description
 Public         If false, trying to view this directory will give a 403
 Static         If true, the server will not use catchall files or allow extensions to be omitted
 Indexing       If false, the server will not give a list of files in the directory
+Headers        Dictionary of headers to set
+Clear Headers  If true, headers set by parent directories will be ignored
 Don't Handle   List of filetypes to serve as-is without running them
 Allow Options  List of options to allow the user to override with .minipyp.yml (not yet implemented)
 =============  ===========
