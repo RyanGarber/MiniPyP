@@ -31,6 +31,12 @@ class CIDict(dict):
                         args[0][key] = value[0]
         super().__init__(*args, **kwargs)
 
+    def __contains__(self, key):
+        for k in self.keys():
+            if key.lower() == k.lower():
+                return True
+        return False
+
     def __getitem__(self, key):
         for k, v in self.items():
             if key.lower() == k.lower():
